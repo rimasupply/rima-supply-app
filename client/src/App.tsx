@@ -69,6 +69,7 @@ const MenuIcon = () => <Icon><path d="M4 7h16M4 12h16M4 17h16" /></Icon>;
 const FileIcon = () => <Icon><path d="M6 2h8l4 4v16H6Z" /><path d="M14 2v4h4M9 12h6M9 16h6" /></Icon>;
 const DepositIcon = () => <Icon><rect x="2" y="6" width="20" height="12" rx="2" /><circle cx="12" cy="12" r="2.6" /><path d="M5.5 9.5h.01M18.5 14.5h.01" /></Icon>;
 const HelpIcon = () => <Icon><circle cx="12" cy="12" r="9" /><path d="M9.5 9a2.5 2.5 0 0 1 5 .2c0 1.7-2.5 2.1-2.5 3.8M12 17h.01" /></Icon>;
+const MicIcon = () => <Icon size={18}><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M5 11a7 7 0 0 0 14 0M12 18v3" /></Icon>;
 
 function money(cents: number) { return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(cents / 100); }
 function percent(basisPoints: number) { return `${(basisPoints / 100).toFixed(2)}%`; }
@@ -2462,6 +2463,128 @@ function fieldSnapshot(lines: FieldLine[], notes: string) {
   return JSON.stringify({ items: lines.map((line) => [line.product_id, line.quantity]), notes });
 }
 
+/** Voice notes for field orders: record via the browser's Web Speech API
+ *  (Chrome/Edge), get a live transcript, then ask the server's AI for a
+ *  summary + action items. Only transcript text is sent — no audio stored. */
+function VoiceNotes({ onAddToNotes, disabled }: { onAddToNotes: (text: string) => void; disabled: boolean }) {
+  const [supported] = useState(() => typeof window !== "undefined" && !!(window.SpeechRecognition || window.webkitSpeechRecognition));
+  const [recording, setRecording] = useState(false);
+  const [transcript, setTranscript] = useState("");
+  const [summary, setSummary] = useState<string | null>(null);
+  const [actionItems, setActionItems] = useState<string[]>([]);
+  const [summarizing, setSummarizing] = useState(false);
+  const [noteError, setNoteError] = useState("");
+  const recognitionRef = useRef<SpeechRecognition | null>(null);
+
+  const stopRecording = () => {
+    try { recognitionRef.current?.stop(); } catch { /* already stopped */ }
+    recognitionRef.current = null;
+    setRecording(false);
+  };
+
+  const startRecording = () => {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) { setNoteError("Voice notes need Chrome or Edge."); return; }
+    setNoteError("");
+    setSummary(null);
+    setActionItems([]);
+    const rec = new SR();
+    rec.continuous = true;
+    rec.interimResults = true;
+    rec.lang = "en-US";
+    rec.onresult = (event: SpeechRecognitionEvent) => {
+      let full = "";
+      for (let i = 0; i < event.results.length; i++) full += event.results[i][0].transcript;
+      setTranscript(full);
+    };
+    rec.onerror = (event: SpeechRecognitionErrorEvent) => {
+      if (event.error === "not-allowed" || event.error === "service-not-allowed") {
+        setNoteError("Microphone blocked — allow mic access in the browser and try again.");
+      } else if (event.error === "no-speech") {
+        setNoteError("Didn't catch that — try speaking closer to the mic.");
+      } else {
+        setNoteError("Voice recording hit a snag. Try again.");
+      }
+      stopRecording();
+    };
+    rec.onend = () => { recognitionRef.current = null; setRecording(false); };
+    try {
+      rec.start();
+      recognitionRef.current = rec;
+      setRecording(true);
+    } catch {
+      setNoteError("Could not start the microphone. Try again.");
+    }
+  };
+
+  useEffect(() => () => { try { recognitionRef.current?.abort(); } catch { /* noop */ } }, []);
+
+  const summarize = async () => {
+    const text = transcript.trim();
+    if (!text || summarizing) return;
+    setSummarizing(true);
+    setNoteError("");
+    try {
+      const result = await api.summarizeVoiceNote({ transcript: text });
+      if (!result.ok) {
+        setNoteError(result.error ?? "Could not summarize that note.");
+      } else {
+        setSummary(result.summary ?? "");
+        setActionItems(result.action_items ?? []);
+      }
+    } catch (err) {
+      setNoteError(err instanceof Error ? err.message : "Could not summarize that note.");
+    } finally {
+      setSummarizing(false);
+    }
+  };
+
+  const clear = () => {
+    stopRecording();
+    setTranscript("");
+    setSummary(null);
+    setActionItems([]);
+    setNoteError("");
+  };
+
+  const addToNotes = () => {
+    const ts = new Date().toLocaleString("en-US", { month: "numeric", day: "numeric", hour: "numeric", minute: "2-digit" });
+    let text = `Voice note (${ts}):\n${summary ?? transcript.trim()}`;
+    if (actionItems.length > 0) text += `\nAction items:\n${actionItems.map((item) => `• ${item}`).join("\n")}`;
+    onAddToNotes(text);
+    setNoteError("");
+  };
+
+  return (
+    <div className="voice-notes">
+      <div className="voice-notes-head"><MicIcon /><h3>Voice notes</h3></div>
+      {!supported ? <p className="voice-notes-unsupported">Voice notes need Chrome or Edge — the transcript won't work in this browser.</p> : (
+        <>
+          <div className="voice-notes-controls">
+            {recording
+              ? <button type="button" className="voice-notes-stop" onClick={stopRecording}>■ Stop</button>
+              : <button type="button" className="secondary-button" onClick={startRecording} disabled={disabled}><MicIcon /> Record</button>}
+            <button type="button" className="secondary-button" onClick={summarize} disabled={disabled || summarizing || transcript.trim().length === 0}>{summarizing ? "Summarizing…" : "✨ Summarize"}</button>
+            <button type="button" className="link-button" onClick={clear} disabled={disabled || (transcript.length === 0 && summary === null)}>Clear</button>
+          </div>
+          {recording ? <p className="voice-notes-listening" role="status"><span className="voice-notes-dot" /> Listening — speak now</p> : null}
+          {transcript ? <div className="voice-notes-transcript"><span>Transcript</span><p>{transcript}</p></div> : null}
+          {summarizing ? <p className="voice-notes-loading" role="status">Writing the summary…</p> : null}
+          {noteError ? <p className="form-error" role="alert">{noteError}</p> : null}
+          {summary !== null ? (
+            <div className="voice-notes-summary">
+              <span>Summary</span>
+              <p>{summary}</p>
+              {actionItems.length > 0 ? (<><span>Action items</span><ul>{actionItems.map((item, i) => <li key={i}>{item}</li>)}</ul></>) : null}
+              <button type="button" className="primary-button" onClick={addToNotes} disabled={disabled}>Add to order notes</button>
+            </div>
+          ) : null}
+        </>
+      )}
+    </div>
+  );
+}
+
 function FieldOrderEditor({ orderId, initialOrder, onClose }: { orderId: string | null; initialOrder: FieldOrder | null; onClose: () => void }) {
   const queryClient = useQueryClient();
   const [currentId, setCurrentId] = useState<string | null>(orderId);
@@ -2640,6 +2763,7 @@ function FieldOrderEditor({ orderId, initialOrder, onClose }: { orderId: string 
           </article>)}
         </div>
         <label className="notes-field field-notes"><span>Notes for the store (optional)</span><textarea aria-label="Notes for the store" value={notes} disabled={readOnly} onChange={(event) => setNotes(event.target.value)} rows={2} placeholder="e.g. Deliver Thursday, ask for Mike at the counter" /></label>
+        {!readOnly ? <VoiceNotes disabled={readOnly} onAddToNotes={(text) => setNotes((prev) => prev ? `${prev}\n\n${text}` : text)} /> : null}
       </section>
 
       {lines.length > 0 && !finalizedInfo ? <section className="checkout-step field-step slip-preview" aria-label="Packing slip preview">

@@ -1168,3 +1168,25 @@ button:focus-visible, input:focus-visible { outline: 3px solid color-mix(in srgb
 .help-tips ul { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; }
 .help-tips li { font-size: 13px; color: var(--dim); }
 .help-foot { margin-top: 16px; text-align: center; color: var(--dim); font-size: 13px; font-style: italic; }
+
+/* ============ Voice Notes ============ */
+.voice-notes { margin-top: 14px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
+.voice-notes-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.voice-notes-head h3 { margin: 0; font-size: 15px; }
+.voice-notes-head svg { color: var(--accent-strong); }
+.voice-notes-controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.voice-notes-controls .secondary-button { display: inline-flex; align-items: center; gap: 7px; }
+.voice-notes-stop { min-height: 44px; border: 0; border-radius: 5px; padding: 0 17px; font-weight: 800; cursor: pointer; background: var(--danger); color: #fff; display: inline-flex; align-items: center; gap: 7px; }
+.voice-notes-listening { display: flex; align-items: center; gap: 8px; margin: 10px 0 0; font-size: 13px; font-weight: 700; color: var(--danger); }
+.voice-notes-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--danger); animation: voice-pulse 1.2s ease-in-out infinite; }
+@keyframes voice-pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.4; transform: scale(0.8); } }
+.voice-notes-transcript { margin-top: 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }
+.voice-notes-transcript > span, .voice-notes-summary > span { display: block; font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.06em; color: var(--dim); margin-bottom: 4px; }
+.voice-notes-transcript p { margin: 0; font-size: 14px; line-height: 1.5; }
+.voice-notes-summary { margin-top: 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }
+.voice-notes-summary p { margin: 0 0 8px; font-size: 14px; line-height: 1.5; }
+.voice-notes-summary ul { margin: 0 0 12px; padding-left: 20px; display: flex; flex-direction: column; gap: 4px; }
+.voice-notes-summary li { font-size: 14px; line-height: 1.45; }
+.voice-notes-summary .primary-button { margin-top: 4px; }
+.voice-notes-loading { margin: 10px 0 0; font-size: 13px; color: var(--dim); font-style: italic; }
+.voice-notes-unsupported { margin: 0; font-size: 13px; color: var(--dim); }

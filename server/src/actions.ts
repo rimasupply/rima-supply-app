@@ -4095,4 +4095,36 @@ export const Actions = {
       };
     },
   }),
+
+  summarizeVoiceNote: defineAction({
+    request: z.object({
+      transcript: z.string().min(1).max(20000),
+    }),
+    response: z.object({
+      ok: z.boolean(),
+      summary: z.string().optional(),
+      action_items: z.array(z.string()).optional(),
+      error: z.string().optional(),
+    }),
+    async handler(ctx, args) {
+      const voiceNoteSchema = z.object({
+        summary: z.string(),
+        action_items: z.array(z.string()),
+      });
+      try {
+        const result = await ctx.inference.complete(
+          `You are helping a field salesperson for RIMA Supply, an autobody supply distributor. The salesperson just recorded a voice note during a visit to a customer's body shop. Read the transcript below and produce:
+1. A concise summary (2-4 sentences) of what was discussed or observed.
+2. A list of concrete action items — products to order or quote, follow-ups, pricing questions, delivery notes, anything the store team needs to act on. Keep each item short and specific.
+
+Transcript:
+${args.transcript.slice(0, 15000)}`,
+          { schema: voiceNoteSchema, timeout_secs: 60 },
+        );
+        return { ok: true, summary: result.summary, action_items: result.action_items };
+      } catch {
+        return { ok: false, error: "AI summaries need an API key — ask Randy." };
+      }
+    },
+  }),
 } satisfies ActionsModule;

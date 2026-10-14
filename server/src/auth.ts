@@ -25,7 +25,7 @@ const STAFF_ALLOWED_ACTIONS = new Set([
   "completeSale", "recordPayment",
   // Field orders (their main job)
   "listFieldOrders", "createFieldOrder", "updateFieldOrder", "cancelFieldOrder",
-  "finalizeFieldOrder",
+  "finalizeFieldOrder", "summarizeVoiceNote",
   // Returns at the counter
   "createReturn",
   // Wishlist
