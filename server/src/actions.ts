@@ -4939,6 +4939,127 @@ ${args.transcript.slice(0, 15000)}`,
     },
   }),
 
+  // TEST-DATA NOTE: getTaxReport EXCLUDES test invoices 1001-1010 (see schema.ts
+  // comment). State comes from customer delivery_state (uppercased); walk-ins
+  // and missing states default to RI per business rule.
+  getTaxReport: defineAction({
+    request: z.object({
+      year: z.number().int().min(2020).max(2100),
+      month: z.number().int().min(1).max(12),
+    }),
+    response: z.object({
+      ok: z.boolean(),
+      year: z.number(),
+      month: z.number(),
+      states: z.array(z.object({
+        state: z.string(),
+        total_sales_cents: z.number(),
+        taxable_sales_cents: z.number(),
+        tax_collected_cents: z.number(),
+        exempt_sales_cents: z.number(),
+        transaction_count: z.number(),
+      })),
+      exempt_details: z.array(z.object({
+        invoice_number: z.number(),
+        date: z.string(),
+        customer_name: z.string(),
+        state: z.string(),
+        amount_cents: z.number(),
+        exemption_reason: z.string(),
+      })),
+      grand_total_sales_cents: z.number(),
+      grand_total_tax_cents: z.number(),
+      grand_total_exempt_cents: z.number(),
+    }),
+    async handler(ctx, args) {
+      const db = ctx.db<typeof schema>();
+      const TEST_INVOICE_MIN = 1001;
+      const TEST_INVOICE_MAX = 1010;
+      const startMs = new Date(args.year, args.month - 1, 1, 0, 0, 0).getTime();
+      const endMs = new Date(args.year, args.month, 0, 23, 59, 59, 999).getTime();
+
+      const salesRows = await db.select({
+        id: schema.sales.id,
+        invoiceNumber: schema.sales.invoiceNumber,
+        customerId: schema.sales.customerId,
+        customerName: schema.sales.customerName,
+        subtotalCents: schema.sales.subtotalCents,
+        taxCents: schema.sales.taxCents,
+        taxStatus: schema.sales.taxStatus,
+        createdAt: schema.sales.createdAt,
+      }).from(schema.sales);
+
+      // Load customer states/tax info in one pass.
+      const customerIds = [...new Set(salesRows.map((s) => s.customerId).filter((id): id is number => id !== null))];
+      const customerMap = new Map<number, { deliveryState: string; taxId: string; notes: string }>();
+      if (customerIds.length > 0) {
+        const custRows = await db.select({
+          id: schema.customers.id,
+          deliveryState: schema.customers.deliveryState,
+          taxId: schema.customers.taxId,
+          notes: schema.customers.notes,
+        }).from(schema.customers).where(inArray(schema.customers.id, customerIds));
+        for (const c of custRows) customerMap.set(c.id, { deliveryState: c.deliveryState, taxId: c.taxId, notes: c.notes });
+      }
+
+      const stateAgg = new Map<string, { total: number; taxable: number; tax: number; exempt: number; count: number }>();
+      const exemptDetails: Array<{ invoice_number: number; date: string; customer_name: string; state: string; amount_cents: number; exemption_reason: string }> = [];
+      let grandSales = 0, grandTax = 0, grandExempt = 0;
+
+      for (const s of salesRows) {
+        const inv = s.invoiceNumber ?? 0;
+        if (inv >= TEST_INVOICE_MIN && inv <= TEST_INVOICE_MAX) continue; // test data
+        const t = s.createdAt instanceof Date ? s.createdAt.getTime() : Number(s.createdAt);
+        if (t < startMs || t > endMs) continue;
+
+        const cust = s.customerId !== null ? customerMap.get(s.customerId) : undefined;
+        const rawState = (cust?.deliveryState ?? "").trim();
+        const state = rawState ? rawState.toUpperCase() : "RI"; // walk-ins / missing → RI
+
+        let agg = stateAgg.get(state);
+        if (!agg) { agg = { total: 0, taxable: 0, tax: 0, exempt: 0, count: 0 }; stateAgg.set(state, agg); }
+        agg.total += s.subtotalCents;
+        agg.count += 1;
+        grandSales += s.subtotalCents;
+
+        if (s.taxStatus === "exempt") {
+          agg.exempt += s.subtotalCents;
+          grandExempt += s.subtotalCents;
+          const reason = cust?.taxId ? `Tax ID ${cust.taxId}` : "Tax exempt";
+          exemptDetails.push({
+            invoice_number: inv,
+            date: new Date(t).toISOString().slice(0, 10),
+            customer_name: s.customerName,
+            state,
+            amount_cents: s.subtotalCents,
+            exemption_reason: reason,
+          });
+        } else {
+          agg.taxable += s.subtotalCents;
+          agg.tax += s.taxCents;
+          grandTax += s.taxCents;
+        }
+      }
+
+      const states = [...stateAgg.entries()]
+        .map(([state, a]) => ({
+          state,
+          total_sales_cents: a.total,
+          taxable_sales_cents: a.taxable,
+          tax_collected_cents: a.tax,
+          exempt_sales_cents: a.exempt,
+          transaction_count: a.count,
+        }))
+        .sort((a, b) => b.total_sales_cents - a.total_sales_cents);
+      exemptDetails.sort((a, b) => b.amount_cents - a.amount_cents);
+
+      return {
+        ok: true, year: args.year, month: args.month, states, exempt_details: exemptDetails,
+        grand_total_sales_cents: grandSales, grand_total_tax_cents: grandTax, grand_total_exempt_cents: grandExempt,
+      };
+    },
+  }),
+
   backupDatabase: defineAction({
     request: z.object({}),
     response: z.object({ ok: z.boolean(), filename: z.string(), data_base64: z.string(), size_bytes: z.number(), error: z.string().optional() }),

@@ -53336,6 +53336,123 @@ ${textResult.text.slice(0, 60000)}`, {
       return { ok: true, filename: `rima-products-${stamp}.csv`, csv };
     }
   }),
+  getTaxReport: defineAction({
+    request: object({
+      year: number2().int().min(2020).max(2100),
+      month: number2().int().min(1).max(12)
+    }),
+    response: object({
+      ok: boolean2(),
+      year: number2(),
+      month: number2(),
+      states: array(object({
+        state: string2(),
+        total_sales_cents: number2(),
+        taxable_sales_cents: number2(),
+        tax_collected_cents: number2(),
+        exempt_sales_cents: number2(),
+        transaction_count: number2()
+      })),
+      exempt_details: array(object({
+        invoice_number: number2(),
+        date: string2(),
+        customer_name: string2(),
+        state: string2(),
+        amount_cents: number2(),
+        exemption_reason: string2()
+      })),
+      grand_total_sales_cents: number2(),
+      grand_total_tax_cents: number2(),
+      grand_total_exempt_cents: number2()
+    }),
+    async handler(ctx, args) {
+      const db = ctx.db();
+      const TEST_INVOICE_MIN = 1001;
+      const TEST_INVOICE_MAX = 1010;
+      const startMs = new Date(args.year, args.month - 1, 1, 0, 0, 0).getTime();
+      const endMs = new Date(args.year, args.month, 0, 23, 59, 59, 999).getTime();
+      const salesRows = await db.select({
+        id: sales.id,
+        invoiceNumber: sales.invoiceNumber,
+        customerId: sales.customerId,
+        customerName: sales.customerName,
+        subtotalCents: sales.subtotalCents,
+        taxCents: sales.taxCents,
+        taxStatus: sales.taxStatus,
+        createdAt: sales.createdAt
+      }).from(sales);
+      const customerIds = [...new Set(salesRows.map((s) => s.customerId).filter((id) => id !== null))];
+      const customerMap = new Map;
+      if (customerIds.length > 0) {
+        const custRows = await db.select({
+          id: customers.id,
+          deliveryState: customers.deliveryState,
+          taxId: customers.taxId,
+          notes: customers.notes
+        }).from(customers).where(inArray(customers.id, customerIds));
+        for (const c of custRows)
+          customerMap.set(c.id, { deliveryState: c.deliveryState, taxId: c.taxId, notes: c.notes });
+      }
+      const stateAgg = new Map;
+      const exemptDetails = [];
+      let grandSales = 0, grandTax = 0, grandExempt = 0;
+      for (const s of salesRows) {
+        const inv = s.invoiceNumber ?? 0;
+        if (inv >= TEST_INVOICE_MIN && inv <= TEST_INVOICE_MAX)
+          continue;
+        const t = s.createdAt instanceof Date ? s.createdAt.getTime() : Number(s.createdAt);
+        if (t < startMs || t > endMs)
+          continue;
+        const cust = s.customerId !== null ? customerMap.get(s.customerId) : undefined;
+        const rawState = (cust?.deliveryState ?? "").trim();
+        const state = rawState ? rawState.toUpperCase() : "RI";
+        let agg = stateAgg.get(state);
+        if (!agg) {
+          agg = { total: 0, taxable: 0, tax: 0, exempt: 0, count: 0 };
+          stateAgg.set(state, agg);
+        }
+        agg.total += s.subtotalCents;
+        agg.count += 1;
+        grandSales += s.subtotalCents;
+        if (s.taxStatus === "exempt") {
+          agg.exempt += s.subtotalCents;
+          grandExempt += s.subtotalCents;
+          const reason = cust?.taxId ? `Tax ID ${cust.taxId}` : "Tax exempt";
+          exemptDetails.push({
+            invoice_number: inv,
+            date: new Date(t).toISOString().slice(0, 10),
+            customer_name: s.customerName,
+            state,
+            amount_cents: s.subtotalCents,
+            exemption_reason: reason
+          });
+        } else {
+          agg.taxable += s.subtotalCents;
+          agg.tax += s.taxCents;
+          grandTax += s.taxCents;
+        }
+      }
+      const states = [...stateAgg.entries()].map(([state, a]) => ({
+        state,
+        total_sales_cents: a.total,
+        taxable_sales_cents: a.taxable,
+        tax_collected_cents: a.tax,
+        exempt_sales_cents: a.exempt,
+        transaction_count: a.count
+      })).sort((a, b) => b.total_sales_cents - a.total_sales_cents);
+      exemptDetails.sort((a, b) => b.amount_cents - a.amount_cents);
+      return {
+        ok: true,
+        year: args.year,
+        month: args.month,
+        states,
+        exempt_details: exemptDetails,
+        grand_total_sales_cents: grandSales,
+        grand_total_tax_cents: grandTax,
+        grand_total_exempt_cents: grandExempt
+      };
+    }
+  }),
   backupDatabase: defineAction({
     request: object({}),
     response: object({ ok: boolean2(), filename: string2(), data_base64: string2(), size_bytes: number2(), error: string2().optional() }),

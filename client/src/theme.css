@@ -1337,3 +1337,20 @@ button:focus-visible, input:focus-visible { outline: 3px solid color-mix(in srgb
   .sidebar-collapse-toggle:hover { border-color: var(--accent); color: #f7f8f3; }
   .sidebar.collapsed .sidebar-collapse-toggle { padding: 10px 0; }
 }
+
+/* ---- Tax Report ---- */
+.tax-month-nav { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+.tax-month-label { font-size: 1.1em; min-width: 160px; text-align: center; }
+.tax-summary-cards { margin: 16px 0; }
+.tax-section-title { margin: 20px 0 10px; font-size: 1.05em; }
+.tax-table-wrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; }
+.tax-table { width: 100%; border-collapse: collapse; font-size: 0.95em; min-width: 640px; }
+.tax-table th, .tax-table td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--border); }
+.tax-table thead th { font-weight: 700; background: var(--surface-alt, rgba(0,0,0,0.04)); white-space: nowrap; }
+.tax-table .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.tax-table tbody tr:last-child td { border-bottom: none; }
+.tax-total-row td { border-top: 2px solid var(--border); background: var(--surface-alt, rgba(0,0,0,0.03)); }
+@media print {
+  .pill-tabs, .analytics-filters, .tax-month-nav .secondary-button { display: none; }
+  .tax-table-wrap { border: none; }
+}

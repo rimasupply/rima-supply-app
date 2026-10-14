@@ -4060,7 +4060,7 @@ function DepositsView({ onOpenCustomer }: { onOpenCustomer: (id: number) => void
   </>;
 }
 
-type AccountingTab = "bills" | "pl" | "unpaid" | "exports";
+type AccountingTab = "bills" | "pl" | "unpaid" | "exports" | "tax";
 type PlPreset = "month" | "lastMonth" | "ytd" | "custom";
 
 function plPresetRange(preset: PlPreset): { start: string; end: string } {
@@ -4138,7 +4138,7 @@ function AccountingView() {
     <p className="field-intro">Track every business bill and expense here — upload supplier invoices or enter cash and check payments by hand. The P&amp;L pulls real sales (test invoices excluded) so you get true numbers for the accountant.</p>
 
     <div className="pill-tabs" role="tablist" aria-label="Accounting sections">
-      {([["bills", "Bills"], ["pl", "P&L"], ["unpaid", "Unpaid"], ["exports", "Exports"]] as Array<[AccountingTab, string]>).map(([v, label]) => (
+      {([["bills", "Bills"], ["pl", "P&L"], ["unpaid", "Unpaid"], ["exports", "Exports"], ["tax", "Tax Report"]] as Array<[AccountingTab, string]>).map(([v, label]) => (
         <button key={v} type="button" role="tab" aria-selected={tab === v} className={tab === v ? "active" : ""} onClick={() => setTab(v)}>{label}</button>
       ))}
     </div>
@@ -4196,11 +4196,143 @@ function AccountingView() {
 
     {tab === "exports" && <ExportsTab />}
 
+    {tab === "tax" && <TaxReportTab />}
+
     {billFormOpen ? <BillForm
       categories={categories.map((c) => c.name)}
       initial={editingBill}
       onClose={() => { setBillFormOpen(false); setEditingBill(null); }}
     /> : null}
+  </>;
+}
+
+const MONTH_NAMES = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+
+function TaxReportTab() {
+  const now = new Date();
+  const [year, setYear] = useState(now.getFullYear());
+  const [month, setMonth] = useState(now.getMonth() + 1);
+
+  const reportQuery = useQuery({
+    queryKey: ["tax-report", year, month],
+    queryFn: () => api.getTaxReport({ year, month }),
+  });
+  const report = reportQuery.data;
+
+  const shiftMonth = (delta: number) => {
+    let y = year, m = month + delta;
+    if (m < 1) { m = 12; y -= 1; } else if (m > 12) { m = 1; y += 1; }
+    setYear(y); setMonth(m);
+  };
+
+  const downloadCsv = () => {
+    if (!report?.ok || !report.states) return;
+    const esc = (v: string | number) => {
+      const s = String(v);
+      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    const money = (c: number) => (c / 100).toFixed(2);
+    const lines: string[] = [];
+    lines.push(`Monthly Sales Tax Report,${MONTH_NAMES[month - 1]} ${year}`);
+    lines.push("");
+    lines.push("State,Transactions,Total Sales,Taxable Sales,Tax Collected,Exempt Sales");
+    for (const s of report.states) {
+      lines.push([s.state, s.transaction_count, money(s.total_sales_cents), money(s.taxable_sales_cents), money(s.tax_collected_cents), money(s.exempt_sales_cents)].map(esc).join(","));
+    }
+    lines.push(["TOTAL", report.states.reduce((n, s) => n + s.transaction_count, 0), money(report.grand_total_sales_cents), "", money(report.grand_total_tax_cents), money(report.grand_total_exempt_cents)].map(esc).join(","));
+    lines.push("");
+    lines.push("Exempt Sales Detail");
+    lines.push("Invoice #,Date,Customer,State,Amount,Reason");
+    for (const e of report.exempt_details) {
+      lines.push([e.invoice_number, e.date, e.customer_name, e.state, money(e.amount_cents), e.exemption_reason].map(esc).join(","));
+    }
+    const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = `tax-report-${year}-${String(month).padStart(2, "0")}.csv`;
+    document.body.appendChild(a); a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  return <>
+    <p className="field-intro">Monthly sales tax breakdown by state — totals, tax collected, and exempt sales. Test invoices 1001–1010 are excluded.</p>
+    <section className="analytics-filters" aria-label="Tax report month">
+      <div className="tax-month-nav">
+        <button type="button" className="secondary-button" onClick={() => shiftMonth(-1)} aria-label="Previous month">‹ Prev</button>
+        <span className="tax-month-label"><strong>{MONTH_NAMES[month - 1]} {year}</strong></span>
+        <button type="button" className="secondary-button" onClick={() => shiftMonth(1)} aria-label="Next month">Next ›</button>
+      </div>
+      <div className="date-inputs">
+        <label><span>Month</span>
+          <select value={month} onChange={(e) => setMonth(Number(e.target.value))}>
+            {MONTH_NAMES.map((n, i) => <option key={n} value={i + 1}>{n}</option>)}
+          </select>
+        </label>
+        <label><span>Year</span>
+          <select value={year} onChange={(e) => setYear(Number(e.target.value))}>
+            {[now.getFullYear() - 2, now.getFullYear() - 1, now.getFullYear(), now.getFullYear() + 1].map((y) => <option key={y} value={y}>{y}</option>)}
+          </select>
+        </label>
+        <button type="button" className="secondary-button" onClick={downloadCsv} disabled={!report?.ok || reportQuery.isPending}>Download CSV</button>
+      </div>
+    </section>
+
+    {reportQuery.isPending ? <div className="loading-list"><span /><span /></div> :
+      reportQuery.isError ? <p className="field-error">Could not load the tax report. Try again.</p> :
+      report && report.ok ? <>
+        <div className="accounting-totals tax-summary-cards">
+          <div><span>Total Sales</span><strong>{money(report.grand_total_sales_cents)}</strong></div>
+          <div><span>Tax Collected</span><strong>{money(report.grand_total_tax_cents)}</strong></div>
+          <div><span>Exempt Sales</span><strong>{money(report.grand_total_exempt_cents)}</strong></div>
+        </div>
+
+        <h3 className="tax-section-title">By State</h3>
+        {report.states.length === 0 ? <p className="muted">No sales this month.</p> : (
+          <div className="tax-table-wrap"><table className="tax-table">
+            <thead><tr><th>State</th><th className="num">Txns</th><th className="num">Total Sales</th><th className="num">Taxable Sales</th><th className="num">Tax Collected</th><th className="num">Exempt Sales</th></tr></thead>
+            <tbody>
+              {report.states.map((s) => (
+                <tr key={s.state}>
+                  <td><strong>{s.state}</strong></td>
+                  <td className="num">{s.transaction_count}</td>
+                  <td className="num">{money(s.total_sales_cents)}</td>
+                  <td className="num">{money(s.taxable_sales_cents)}</td>
+                  <td className="num">{money(s.tax_collected_cents)}</td>
+                  <td className="num">{money(s.exempt_sales_cents)}</td>
+                </tr>
+              ))}
+              <tr className="tax-total-row">
+                <td><strong>Total</strong></td>
+                <td className="num"><strong>{report.states.reduce((n, s) => n + s.transaction_count, 0)}</strong></td>
+                <td className="num"><strong>{money(report.grand_total_sales_cents)}</strong></td>
+                <td className="num"><strong>{money(report.states.reduce((n, s) => n + s.taxable_sales_cents, 0))}</strong></td>
+                <td className="num"><strong>{money(report.grand_total_tax_cents)}</strong></td>
+                <td className="num"><strong>{money(report.grand_total_exempt_cents)}</strong></td>
+              </tr>
+            </tbody>
+          </table></div>
+        )}
+
+        <h3 className="tax-section-title">Exempt Sales Detail</h3>
+        {report.exempt_details.length === 0 ? <p className="muted">No exempt sales this month.</p> : (
+          <div className="tax-table-wrap"><table className="tax-table">
+            <thead><tr><th>Invoice #</th><th>Date</th><th>Customer</th><th>State</th><th className="num">Amount</th><th>Reason</th></tr></thead>
+            <tbody>
+              {report.exempt_details.map((e) => (
+                <tr key={e.invoice_number}>
+                  <td>#{e.invoice_number}</td>
+                  <td>{e.date}</td>
+                  <td>{e.customer_name}</td>
+                  <td><strong>{e.state}</strong></td>
+                  <td className="num">{money(e.amount_cents)}</td>
+                  <td>{e.exemption_reason}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table></div>
+        )}
+      </> : null}
   </>;
 }
 
