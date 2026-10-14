@@ -28,7 +28,7 @@ type Account = ApiResponse<typeof api, "getCustomerAccount">;
 type CustomerPreferences = ApiResponse<typeof api, "getCustomerPreferences">;
 type PreferenceItem = CustomerPreferences["most_bought"][number];
 type ManualPreference = CustomerPreferences["manual"][number];
-type View = "inventory" | "products" | "customers" | "checkout" | "settings" | "field" | "analytics" | "orders" | "markup" | "team" | "returns" | "salesorders" | "statements" | "deposits" | "users";
+type View = "inventory" | "products" | "customers" | "checkout" | "settings" | "field" | "analytics" | "orders" | "markup" | "team" | "returns" | "salesorders" | "statements" | "deposits" | "users" | "help";
 type DepositReport = ApiResponse<typeof api, "getDepositReport">;
 type FieldOrder = ApiResponse<typeof api, "listFieldOrders">["orders"][number];
 type Mode = "all" | "reorder";
@@ -68,6 +68,7 @@ const TruckIcon = () => <Icon><path d="M2 6h12v10H2zM14 10h4l3 3v3h-7z" /><circl
 const MenuIcon = () => <Icon><path d="M4 7h16M4 12h16M4 17h16" /></Icon>;
 const FileIcon = () => <Icon><path d="M6 2h8l4 4v16H6Z" /><path d="M14 2v4h4M9 12h6M9 16h6" /></Icon>;
 const DepositIcon = () => <Icon><rect x="2" y="6" width="20" height="12" rx="2" /><circle cx="12" cy="12" r="2.6" /><path d="M5.5 9.5h.01M18.5 14.5h.01" /></Icon>;
+const HelpIcon = () => <Icon><circle cx="12" cy="12" r="9" /><path d="M9.5 9a2.5 2.5 0 0 1 5 .2c0 1.7-2.5 2.1-2.5 3.8M12 17h.01" /></Icon>;
 
 function money(cents: number) { return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(cents / 100); }
 function percent(basisPoints: number) { return `${(basisPoints / 100).toFixed(2)}%`; }
@@ -3893,6 +3894,216 @@ function SettingsView() {
 
 type AppUser = ApiResponse<typeof api, "listUsers">["users"][number];
 
+type HelpGuide = { id: string; title: string; summary: string; steps: string[]; tips?: string[] };
+
+const HELP_GUIDES: HelpGuide[] = [
+  {
+    id: "checkout",
+    title: "Cash out a customer (Checkout)",
+    summary: "Ring up a walk-in sale from start to printed receipt.",
+    steps: [
+      "Open Checkout from the sidebar (it's the home screen).",
+      "Search for each item by name, part number, or scan the barcode, then tap it to add it to the ticket.",
+      "Adjust quantities with the + / − buttons next to each line. Remove a line with the trash icon.",
+      "If the customer has an account, tap the customer field and pick their name so the sale links to them.",
+      "Check the salesperson field — make sure the right person is credited.",
+      "Tap the payment button. Choose Cash, Card, or Check and enter the amount tendered.",
+      "For account customers, you can charge it to their account instead of taking payment now.",
+      "Tap Print for a paper receipt, or use Email / Text to send it to the customer.",
+    ],
+    tips: [
+      "Walk-in sales are always charged 7% RI sales tax automatically.",
+      "If a customer is tax-exempt, set that on their customer record first.",
+    ],
+  },
+  {
+    id: "returns",
+    title: "Process a return",
+    summary: "Take an item back and refund cash, card, or account credit.",
+    steps: [
+      "Open Returns from the sidebar.",
+      "Find the original sale — search by invoice number or customer name.",
+      "Select the item(s) being returned and enter the quantity coming back.",
+      "Pick a reason for the return (defective, wrong item, customer changed mind, etc.).",
+      "Choose the refund method: Cash, Card, or Account Credit.",
+      "Confirm the return. The item goes back into inventory automatically.",
+      "Print or send the return receipt for the customer.",
+    ],
+    tips: [
+      "Account credit keeps the money on the customer's account for next time — good for regulars.",
+      "Card refunds go back to the original card when possible.",
+    ],
+  },
+  {
+    id: "balance",
+    title: "Check a customer balance",
+    summary: "Look up what a customer owes in seconds.",
+    steps: [
+      "Open Customers from the sidebar.",
+      "Search for the customer by name or phone number and tap their name.",
+      "Their account page shows the total balance due at the top.",
+      "Below that you'll see every open invoice with its amount and date.",
+      "Tap any invoice to see its line items, payments, and remaining balance.",
+      "Use the Accept Payment button on the account page to take a payment against the balance.",
+    ],
+    tips: [
+      "The balance updates the moment a payment is recorded — no waiting.",
+      "Statements (sidebar → Statements) give a formal month-by-month breakdown you can print or email.",
+    ],
+  },
+  {
+    id: "pricing",
+    title: "Update a product price",
+    summary: "Change a selling price — or let the markup rules do it for you.",
+    steps: [
+      "Open Products from the sidebar and search for the item.",
+      "Tap the product to open its details, then Edit.",
+      "Change the selling price and save.",
+      "For cost changes: update the cost and the app recalculates the selling price from the markup rule automatically — your markup percent never changes unless you change it.",
+      "To review automatic price changes before they go live, open Markup Rules from the sidebar and approve or deny each one.",
+    ],
+    tips: [
+      "Selling-price changes always need approval — cost changes flow through on their own.",
+      "Markup Rules shows every pending price recalculation in one place. Batch-approve when ready.",
+    ],
+  },
+  {
+    id: "new-product",
+    title: "Add a new product",
+    summary: "Get a new item into the catalog so it can be sold.",
+    steps: [
+      "Open Products from the sidebar, then tap Add Product (or New).",
+      "Enter the part number first — that's what the title starts with.",
+      "Fill in the product name, vendor/manufacturer, and a short description.",
+      "Enter your cost and the selling price (or leave the price blank and let the markup rule set it).",
+      "Add the barcode if the item has one — this makes checkout scanning work.",
+      "Set the unit (each, box, case, gallon, etc.) and the par level if you want low-stock alerts.",
+      "Save. The product is immediately searchable at checkout.",
+    ],
+    tips: [
+      "Good titles start with the part number, e.g. \"3M 6654 — Masking Tape\".",
+      "Set a par level and the Tuesday PO generator will remind you to reorder.",
+    ],
+  },
+  {
+    id: "field-order",
+    title: "Take a field order (at a customer's shop)",
+    summary: "Write up an order on your phone while standing in a body shop.",
+    steps: [
+      "Open Field Orders from the sidebar (works great on your phone).",
+      "Tap New Order and pick the customer — or create them on the spot.",
+      "Add items by searching or scanning. Quantities can be adjusted per line.",
+      "Add any notes (e.g. \"needs it Thursday\", \"color match\").",
+      "Save as Draft if you're still working, or Finalize when the order is confirmed.",
+      "Back at the store, finalized field orders show up ready to pull and pack.",
+    ],
+    tips: [
+      "Drafts are private to you until finalized — no one else sees them.",
+      "The customer gets a confirmation with their order details.",
+    ],
+  },
+  {
+    id: "receiving",
+    title: "Receive a shipment (purchase orders)",
+    summary: "Check in what arrived and update inventory in one pass.",
+    steps: [
+      "Open Purchase from the sidebar.",
+      "If you already made a PO: open it and tap Receive, then check off what arrived against what was ordered.",
+      "If there's no PO: use the invoice-upload receiving — upload the supplier's invoice PDF and match the lines to products.",
+      "For items that didn't arrive, mark them backordered so the next PO nets them out.",
+      "Confirm the receipt. On-hand quantities update automatically.",
+      "Costs on the invoice update your product costs (selling prices recalculate per markup rules).",
+    ],
+    tips: [
+      "Always receive against the PO when you have one — it's faster and catches shortages.",
+      "The Tuesday PO generator subtracts what's already inbound, so receiving promptly keeps orders accurate.",
+    ],
+  },
+  {
+    id: "statement",
+    title: "Run a customer statement",
+    summary: "Print or email a formal statement of what a customer owes.",
+    steps: [
+      "Open Statements from the sidebar.",
+      "Pick the customer and the month/year.",
+      "The app builds a statement of that period's invoices with a total due.",
+      "Tap Print for a branded paper copy, or Email / Text to send it straight to the customer's AP contact.",
+    ],
+    tips: [
+      "Statements pull the AP email from the customer record — keep it up to date.",
+      "Every statement looks branded and professional, end to end.",
+    ],
+  },
+  {
+    id: "deposits",
+    title: "End-of-day: deposits report",
+    summary: "Reconcile the day's take in a couple of taps.",
+    steps: [
+      "Open Deposits from the sidebar.",
+      "Pick today (or any range) — presets or custom dates.",
+      "You'll see every payment broken down by cash, card, and check, with received vs. refunded vs. net.",
+      "Day-grouped subtotals plus a grand total at the bottom.",
+      "Print the branded deposit report for your records or the bank bag.",
+    ],
+    tips: [
+      "Run this at close every day — it takes ten seconds and keeps the drawer honest.",
+    ],
+  },
+  {
+    id: "customers",
+    title: "Add or edit a customer",
+    summary: "Keep customer records complete so billing just works.",
+    steps: [
+      "Open Customers, then tap Add Customer.",
+      "Enter the shop name, contact person, phone, and email.",
+      "Fill in the AP (accounts payable) contact and email — statements and invoices go here.",
+      "Add the delivery address — the app picks RI 7% or MA 6.25% tax from the state automatically.",
+      "Set tax-exempt if they gave you a certificate, and save their tax ID.",
+      "Card on file: record last 4 digits, expiry, and cardholder name only.",
+    ],
+    tips: [
+      "The \"print total balance on receipts\" toggle is per customer — turn it off for net-30 accounts that don't want the full balance on every receipt.",
+    ],
+  },
+];
+
+function HelpView() {
+  const [openId, setOpenId] = useState<string | null>("checkout");
+  const [search, setSearch] = useState("");
+  const q = search.trim().toLowerCase();
+  const guides = q
+    ? HELP_GUIDES.filter((g) => (g.title + " " + g.summary + " " + g.steps.join(" ")).toLowerCase().includes(q))
+    : HELP_GUIDES;
+  return <>
+    <section className="plain-command">
+      <div>
+        <p>HELP & TRAINING</p>
+        <h1>How do I…?</h1>
+      </div>
+    </section>
+    <section className="help-search">
+      <SearchField value={search} onChange={setSearch} placeholder="Search guides — try “return” or “price”" label="Search help guides" />
+    </section>
+    {guides.length === 0 ? <div className="empty-state"><h2>No guides found</h2><p>Try a different search term.</p></div> : null}
+    <div className="help-list">
+      {guides.map((g) => {
+        const open = openId === g.id;
+        return <article key={g.id} className={`help-card ${open ? "open" : ""}`}>
+          <button type="button" className="help-card-head" onClick={() => setOpenId(open ? null : g.id)} aria-expanded={open}>
+            <span><strong>{g.title}</strong><small>{g.summary}</small></span>
+            <ChevronIcon />
+          </button>
+          {open ? <div className="help-card-body">
+            <ol>{g.steps.map((s, i) => <li key={i}>{s}</li>)}</ol>
+            {g.tips?.length ? <div className="help-tips"><p>Good to know</p><ul>{g.tips.map((t, i) => <li key={i}>{t}</li>)}</ul></div> : null}
+          </div> : null}
+        </article>;
+      })}
+    </div>
+    <p className="help-foot">Still stuck? Ask Randy or Nathan — they'd rather answer than fix a mistake later.</p>
+  </>;
+}
+
 function UserManagementView() {
   const { user: currentUser } = useAuth();
   const queryClient = useQueryClient();
@@ -3990,7 +4201,7 @@ export function App() {
   const receiving = useQuery({ queryKey: ["receiving-documents"], queryFn: () => api.listReceivingDocuments({ limit: 25 }) });
   const receivingReviewCount = receiving.data?.needs_review_count ?? 0;
   const purchaseBadge = poDraftCount + receivingReviewCount;
-  const viewLabels: Record<View, string> = { checkout: "Checkout", field: "Field Orders", products: "Products", customers: "Customers", inventory: "Inventory", orders: "Purchase", analytics: "Analytics", settings: "Settings", markup: "Markup Rules", team: "Sales Team", returns: "Returns", salesorders: "Orders", statements: "Statements", deposits: "Deposits", users: "Users" };
+  const viewLabels: Record<View, string> = { checkout: "Checkout", field: "Field Orders", products: "Products", customers: "Customers", inventory: "Inventory", orders: "Purchase", analytics: "Analytics", settings: "Settings", markup: "Markup Rules", team: "Sales Team", returns: "Returns", salesorders: "Orders", statements: "Statements", deposits: "Deposits", users: "Users", help: "Help & Training" };
   const go = (next: View) => { setView(next); setMenuOpen(false); };
   const navItem = (next: View, label: string, icon: ReactNode, badge = 0) => <button type="button" className={view === next ? "active" : ""} onClick={() => go(next)} aria-current={view === next ? "page" : undefined}>{icon}<span>{label}</span>{badge > 0 ? <span className="nav-badge">{badge}</span> : null}</button>;
   return <div className="app-shell">
@@ -4008,13 +4219,14 @@ export function App() {
           <div className="sidebar-group"><p>Counter & field</p>{navItem("checkout", "Checkout", <CartIcon />)}{navItem("salesorders", "Orders", <FileIcon />)}{navItem("field", "Field Orders", <ClipboardIcon />, fieldDraftCount)}{navItem("customers", "Customers", <UserIcon />)}{navItem("statements", "Statements", <MailIcon />)}</div>
           <div className="sidebar-group"><p>Stock & ordering</p>{navItem("products", "Products", <TagIcon />)}{navItem("inventory", "Inventory", <BoxIcon />)}{navItem("orders", "Purchase", <TruckIcon />, purchaseBadge)}</div>
           <div className="sidebar-group"><p>Business</p>{navItem("analytics", "Analytics", <ChartIcon />)}{navItem("deposits", "Deposits", <DepositIcon />)}{navItem("returns", "Returns", <ReturnIcon />)}{navItem("markup", "Markup Rules", <TagIcon />)}{navItem("team", "Sales Team", <UserIcon />)}{navItem("settings", "Settings", <SettingsIcon />)}{user?.role === "admin" ? navItem("users", "Users", <UserIcon />) : null}</div>
+          <div className="sidebar-group"><p>Resources</p>{navItem("help", "Help & Training", <HelpIcon />)}</div>
         </nav>
         <div className="sidebar-user">
           <div className="sidebar-user-info"><UserIcon /><span><strong>{user?.displayName || user?.username || "Signed in"}</strong><small>{user?.role ? user.role.charAt(0).toUpperCase() + user.role.slice(1) : ""}</small></span></div>
           <button type="button" className="sidebar-logout" onClick={() => void logout()}>Sign out</button>
         </div>
       </aside>
-      <main className="app-main">{view === "checkout" ? <CheckoutView onOpenCustomer={setAccountId} /> : view === "salesorders" ? <OrdersView onOpenCustomer={setAccountId} onOpenField={() => setView("field")} /> : view === "statements" ? <StatementsView onOpenCustomer={setAccountId} /> : view === "deposits" ? <DepositsView onOpenCustomer={setAccountId} /> : view === "field" ? <FieldOrdersView /> : view === "products" ? <ProductManagementView /> : view === "customers" ? <CustomersView /> : view === "inventory" ? <InventoryView /> : view === "orders" ? <PurchaseOrdersView /> : view === "analytics" ? <AnalyticsView /> : view === "markup" ? <MarkupRulesView /> : view === "team" ? <SalesTeamView /> : view === "returns" ? <ReturnsSummaryView /> : view === "users" ? <UserManagementView /> : <SettingsView />}</main>
+      <main className="app-main">{view === "checkout" ? <CheckoutView onOpenCustomer={setAccountId} /> : view === "salesorders" ? <OrdersView onOpenCustomer={setAccountId} onOpenField={() => setView("field")} /> : view === "statements" ? <StatementsView onOpenCustomer={setAccountId} /> : view === "deposits" ? <DepositsView onOpenCustomer={setAccountId} /> : view === "field" ? <FieldOrdersView /> : view === "products" ? <ProductManagementView /> : view === "customers" ? <CustomersView /> : view === "inventory" ? <InventoryView /> : view === "orders" ? <PurchaseOrdersView /> : view === "analytics" ? <AnalyticsView /> : view === "markup" ? <MarkupRulesView /> : view === "team" ? <SalesTeamView /> : view === "returns" ? <ReturnsSummaryView /> : view === "users" ? <UserManagementView /> : view === "help" ? <HelpView /> : <SettingsView />}</main>
     </div>
     {accountId !== null ? <AccountSheet id={accountId} onClose={() => setAccountId(null)} /> : null}
     <div id="rima-print-area" style={{ display: "none" }} aria-hidden="true" />

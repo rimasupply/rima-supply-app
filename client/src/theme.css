@@ -1149,3 +1149,22 @@ button:focus-visible, input:focus-visible { outline: 3px solid color-mix(in srgb
   .print-plain h1 { font-size: 18px; margin: 0 0 12px; }
   .print-plain pre { white-space: pre-wrap; word-wrap: break-word; font-family: inherit; font-size: 12px; margin: 0; }
 }
+
+/* ============ Help & Training ============ */
+.help-search { margin-bottom: 12px; }
+.help-list { display: flex; flex-direction: column; gap: 10px; }
+.help-card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+.help-card-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; padding: 14px 16px; background: none; border: none; cursor: pointer; text-align: left; color: var(--text); }
+.help-card-head > span { display: flex; flex-direction: column; gap: 2px; }
+.help-card-head strong { font-size: 15px; }
+.help-card-head small { color: var(--dim); font-size: 13px; }
+.help-card-head svg { flex-shrink: 0; transition: transform 0.15s; color: var(--dim); }
+.help-card.open .help-card-head svg { transform: rotate(90deg); }
+.help-card-body { padding: 0 16px 16px; border-top: 1px solid var(--border); padding-top: 12px; }
+.help-card-body ol { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 8px; }
+.help-card-body ol li { font-size: 14px; line-height: 1.5; }
+.help-tips { margin-top: 12px; background: var(--surface-2); border-radius: 8px; padding: 10px 12px; }
+.help-tips p { font-weight: 600; font-size: 13px; margin: 0 0 6px; color: var(--accent-strong); }
+.help-tips ul { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; }
+.help-tips li { font-size: 13px; color: var(--dim); }
+.help-foot { margin-top: 16px; text-align: center; color: var(--dim); font-size: 13px; font-style: italic; }
