@@ -4957,4 +4957,79 @@ ${args.transcript.slice(0, 15000)}`,
       }
     },
   }),
+
+  getBackupSettings: defineAction({
+    request: z.object({}),
+    response: z.object({
+      ok: z.boolean(),
+      frequency: z.enum(["off", "daily", "weekly"]),
+      last_backup_at: z.number().nullable(),
+      backup_count: z.number(),
+    }),
+    async handler(ctx) {
+      const { join } = await import("node:path");
+      const { listBackupFiles } = await import("./backup");
+      const db = ctx.db<typeof schema>();
+      await db.insert(schema.appSettings).values({ id: 1 }).onConflictDoNothing({ target: schema.appSettings.id });
+      const [settings] = await db.select().from(schema.appSettings).where(eq(schema.appSettings.id, 1)).limit(1);
+      const DATA_DIR = process.env.DATA_DIR ?? join(process.cwd(), "data");
+      const backups = listBackupFiles(DATA_DIR);
+      const freq = settings?.autoBackupFrequency;
+      return {
+        ok: true,
+        frequency: freq === "daily" || freq === "weekly" ? freq : "off",
+        last_backup_at: settings?.lastAutoBackupAt ? new Date(settings.lastAutoBackupAt).getTime() : null,
+        backup_count: backups.length,
+      };
+    },
+  }),
+
+  setBackupFrequency: defineAction({
+    request: z.object({ frequency: z.enum(["off", "daily", "weekly"]) }),
+    response: z.object({ ok: z.boolean() }),
+    async handler(ctx, args) {
+      const db = ctx.db<typeof schema>();
+      await db.insert(schema.appSettings).values({ id: 1 }).onConflictDoNothing({ target: schema.appSettings.id });
+      await db.update(schema.appSettings)
+        .set({ autoBackupFrequency: args.frequency, updatedAt: new Date() })
+        .where(eq(schema.appSettings.id, 1));
+      return { ok: true };
+    },
+  }),
+
+  listBackups: defineAction({
+    request: z.object({}),
+    response: z.object({
+      ok: z.boolean(),
+      backups: z.array(z.object({ filename: z.string(), size_bytes: z.number(), created_at: z.number() })),
+    }),
+    async handler() {
+      const { join } = await import("node:path");
+      const { listBackupFiles } = await import("./backup");
+      const DATA_DIR = process.env.DATA_DIR ?? join(process.cwd(), "data");
+      return { ok: true, backups: listBackupFiles(DATA_DIR) };
+    },
+  }),
+
+  downloadBackup: defineAction({
+    request: z.object({ filename: z.string() }),
+    response: z.object({ ok: z.boolean(), filename: z.string(), data_base64: z.string(), size_bytes: z.number(), error: z.string().optional() }),
+    async handler(_ctx, args) {
+      const { readFileSync, statSync, existsSync } = await import("node:fs");
+      const { join } = await import("node:path");
+      const { safeBackupFilename, backupsDir } = await import("./backup");
+      const safe = safeBackupFilename(args.filename);
+      if (!safe) return { ok: false, filename: "", data_base64: "", size_bytes: 0, error: "Invalid backup filename." };
+      const DATA_DIR = process.env.DATA_DIR ?? join(process.cwd(), "data");
+      const full = join(backupsDir(DATA_DIR), safe);
+      if (!existsSync(full)) return { ok: false, filename: "", data_base64: "", size_bytes: 0, error: "Backup not found." };
+      try {
+        const stat = statSync(full);
+        const buf = readFileSync(full);
+        return { ok: true, filename: safe, data_base64: buf.toString("base64"), size_bytes: stat.size };
+      } catch {
+        return { ok: false, filename: "", data_base64: "", size_bytes: 0, error: "Could not read backup file." };
+      }
+    },
+  }),
 } satisfies ActionsModule;

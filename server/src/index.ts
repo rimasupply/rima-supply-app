@@ -213,3 +213,10 @@ if (existsSync(join(clientDir, "index.html"))) {
 app.listen(PORT, () => {
   console.log(`[rima] Listening on :${PORT} (data: ${DATA_DIR})`);
 });
+
+// Scheduled automatic database backups: check on startup, then every hour.
+// maybeAutoBackup is a no-op unless the frequency is set to daily/weekly.
+import("./backup").then(({ maybeAutoBackup }) => {
+  void maybeAutoBackup(sqlite, DATA_DIR);
+  setInterval(() => { void maybeAutoBackup(sqlite, DATA_DIR); }, 60 * 60 * 1000);
+}).catch((e) => console.log("[backup] Scheduler init failed:", e));

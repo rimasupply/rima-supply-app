@@ -4264,6 +4264,7 @@ function ExportsTab() {
 
   return <>
     <p className="field-intro">Download your business data as CSV files — open them in Excel or Google Sheets, or hand them to your accountant.</p>
+    <AutoBackupSection downloading={downloading !== null} />
     <div className="export-card export-backup">
       <span className="customer-copy"><strong>Backup Everything</strong><small>Download a complete copy of your entire database — every product, customer, order, bill, and setting. Keep it somewhere safe.</small></span>
       <button type="button" className="primary-button" disabled={downloading !== null} onClick={() => void doBackup()}>
@@ -4293,6 +4294,80 @@ function ExportsTab() {
     </div>
     <p className="field-note">Test invoices (1001–1010) and test bills are excluded from exports.</p>
   </>;
+}
+
+function AutoBackupSection({ downloading }: { downloading: boolean }) {
+  const queryClient = useQueryClient();
+  const [error, setError] = useState("");
+  const settings = useQuery({ queryKey: ["backup-settings"], queryFn: () => api.getBackupSettings({}) });
+  const backups = useQuery({ queryKey: ["backup-list"], queryFn: () => api.listBackups({}) });
+
+  const setFreq = useMutation({
+    mutationFn: (frequency: "off" | "daily" | "weekly") => api.setBackupFrequency({ frequency }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["backup-settings"] });
+      setError("");
+    },
+    onError: () => setError("Could not save the backup schedule. Try again."),
+  });
+
+  const downloadOne = async (filename: string) => {
+    setError("");
+    try {
+      const result = await api.downloadBackup({ filename });
+      if (!result.ok) { setError(result.error ?? "Download failed."); return; }
+      const bytes = Uint8Array.from(atob(result.data_base64), (c) => c.charCodeAt(0));
+      const blob = new Blob([bytes], { type: "application/x-sqlite3" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = result.filename;
+      document.body.appendChild(a); a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch {
+      setError("Download failed. Check your connection and try again.");
+    }
+  };
+
+  const freq = settings.data?.frequency ?? "off";
+  const lastAt = settings.data?.last_backup_at ?? null;
+  const count = settings.data?.backup_count ?? 0;
+  const fmtDate = (ms: number) => new Date(ms).toLocaleString(undefined, { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" });
+  const fmtSize = (b: number) => b > 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(b / 1024))} KB`;
+
+  return (
+    <section className="export-card export-auto-backup" aria-label="Automatic backups">
+      <span className="customer-copy">
+        <strong>Automatic Backups</strong>
+        <small>Back up your database on a schedule — no need to remember. Keeps the 10 most recent.</small>
+      </span>
+      <div className="auto-backup-controls">
+        <label>
+          <span>Schedule</span>
+          <select value={freq} disabled={setFreq.isPending || settings.isPending} onChange={(e) => setFreq.mutate(e.target.value as "off" | "daily" | "weekly")}>
+            <option value="off">Off</option>
+            <option value="daily">Daily</option>
+            <option value="weekly">Weekly</option>
+          </select>
+        </label>
+        <small className="field-note">
+          {settings.isPending ? "Loading…" : lastAt ? `Last backup: ${fmtDate(lastAt)}` : freq === "off" ? "Automatic backups are off." : "No backup yet — one will run within the hour."}
+          {count > 0 ? ` · ${count} stored` : ""}
+        </small>
+      </div>
+      {error ? <p className="field-error">{error}</p> : null}
+      {backups.data && backups.data.backups.length > 0 ? (
+        <ul className="auto-backup-list">
+          {backups.data.backups.map((b) => (
+            <li key={b.filename}>
+              <span>{b.filename.replace("rima-backup-", "").replace(".db", "")}<small> · {fmtSize(b.size_bytes)}</small></span>
+              <button type="button" className="secondary-button" disabled={downloading} onClick={() => void downloadOne(b.filename)}>Download</button>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </section>
+  );
 }
 
 function BillRow({ bill, onEdit }: {

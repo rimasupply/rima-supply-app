@@ -84,6 +84,8 @@ export const appSettings = sqliteTable("app_settings", {
   medcoMinOrderCents: integer("medco_min_order_cents").notNull().default(0),
   oakMinOrderCents: integer("oak_min_order_cents").notNull().default(0),
   nextPoNumber: integer("next_po_number").notNull().default(1001),
+  autoBackupFrequency: text("auto_backup_frequency").notNull().default("off"),
+  lastAutoBackupAt: integer("last_auto_backup_at", { mode: "timestamp_ms" }),
   updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull().$defaultFn(() => new Date()),
 });
 
