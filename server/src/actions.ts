@@ -1,5 +1,5 @@
 import { defineAction, z, type ActionsModule, type Ctx } from "./sdk-compat";
-import { and, asc, desc, eq, gt, gte, inArray, like, lt, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, like, lt, lte, or, sql } from "drizzle-orm";
 import { privileged } from "./privileged";
 import seedProducts from "./products.json";
 import * as schema from "./schema";
@@ -4420,6 +4420,371 @@ ${args.transcript.slice(0, 15000)}`,
       const typeRank = { visit: 0, sales_call: 1, task: 2 };
       out.sort((a, b) => (prioRank[a.priority] - prioRank[b.priority]) || (typeRank[a.task_type] - typeRank[b.task_type]) || a.title.localeCompare(b.title));
       return { tasks: out };
+    },
+  }),
+
+  // ── Accounting / Bills & Expenses (QuickBooks replacement) ──────────────
+  // TEST-DATA NOTE: getProfitLoss EXCLUDES test invoices 1001-1010 (see schema.ts
+  // comment). All bills default to is_test=0 (real).
+
+  listBills: defineAction({
+    request: z.object({
+      start_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+      end_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+      category: z.string().optional(),
+      unpaid_only: z.boolean().default(false),
+    }),
+    response: z.object({
+      bills: z.array(z.object({
+        id: z.number(), vendor_name: z.string(), invoice_number: z.string(),
+        bill_date: z.string(), due_date: z.string().nullable(),
+        amount_cents: z.number(), category: z.string(),
+        payment_method: z.string(), paid_at: z.string().nullable(),
+        notes: z.string(), has_attachment: z.boolean(),
+      })),
+    }),
+    async handler(ctx, args) {
+      const db = ctx.db<typeof schema>();
+      const conditions = [eq(schema.bills.isTest, 0)];
+      if (args.start_date) conditions.push(gte(schema.bills.billDate, args.start_date));
+      if (args.end_date) conditions.push(lte(schema.bills.billDate, args.end_date));
+      if (args.category) conditions.push(eq(schema.bills.category, args.category));
+      if (args.unpaid_only) conditions.push(eq(schema.bills.paymentMethod, "unpaid"));
+      const rows = await db.select().from(schema.bills)
+        .where(and(...conditions))
+        .orderBy(desc(schema.bills.billDate))
+        .limit(500);
+      return {
+        bills: rows.map((r) => ({
+          id: r.id, vendor_name: r.vendorName, invoice_number: r.invoiceNumber,
+          bill_date: r.billDate, due_date: r.dueDate,
+          amount_cents: r.amountCents, category: r.category,
+          payment_method: r.paymentMethod,
+          paid_at: r.paidAt ? r.paidAt.toISOString() : null,
+          notes: r.notes, has_attachment: !!r.attachmentBlobKey,
+        })),
+      };
+    },
+  }),
+
+  createBill: defineAction({
+    request: z.object({
+      vendor_name: z.string().trim().min(1).max(200),
+      invoice_number: z.string().trim().max(100).default(""),
+      bill_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+      due_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+      amount_cents: z.number().int().min(0),
+      category: z.string().trim().min(1).max(100),
+      payment_method: z.enum(["unpaid", "cash", "check", "card", "ach"]).default("unpaid"),
+      notes: z.string().max(2000).default(""),
+    }),
+    response: z.object({ ok: z.boolean(), error: z.string().optional(), bill_id: z.number().optional() }),
+    async handler(ctx, args) {
+      const db = ctx.db<typeof schema>();
+      const now = new Date();
+      const [row] = await db.insert(schema.bills).values({
+        vendorName: args.vendor_name,
+        invoiceNumber: args.invoice_number,
+        billDate: args.bill_date,
+        dueDate: args.due_date ?? null,
+        amountCents: args.amount_cents,
+        category: args.category,
+        paymentMethod: args.payment_method,
+        paidAt: args.payment_method === "unpaid" ? null : now,
+        notes: args.notes,
+        isTest: 0,
+        createdBy: ctx.user?.displayName ?? "",
+        createdAt: now,
+        updatedAt: now,
+      }).returning({ id: schema.bills.id });
+      ctx.invalidateQueries();
+      return { ok: true, bill_id: row.id };
+    },
+  }),
+
+  updateBill: defineAction({
+    request: z.object({
+      id: z.number().int(),
+      vendor_name: z.string().trim().min(1).max(200).optional(),
+      invoice_number: z.string().trim().max(100).optional(),
+      bill_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+      due_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
+      amount_cents: z.number().int().min(0).optional(),
+      category: z.string().trim().min(1).max(100).optional(),
+      notes: z.string().max(2000).optional(),
+    }),
+    response: z.object({ ok: z.boolean(), error: z.string().optional() }),
+    async handler(ctx, args) {
+      const db = ctx.db<typeof schema>();
+      const { id, ...fields } = args;
+      const patch: Record<string, unknown> = { updatedAt: new Date() };
+      if (fields.vendor_name !== undefined) patch.vendorName = fields.vendor_name;
+      if (fields.invoice_number !== undefined) patch.invoiceNumber = fields.invoice_number;
+      if (fields.bill_date !== undefined) patch.billDate = fields.bill_date;
+      if (fields.due_date !== undefined) patch.dueDate = fields.due_date;
+      if (fields.amount_cents !== undefined) patch.amountCents = fields.amount_cents;
+      if (fields.category !== undefined) patch.category = fields.category;
+      if (fields.notes !== undefined) patch.notes = fields.notes;
+      await db.update(schema.bills).set(patch).where(eq(schema.bills.id, id));
+      ctx.invalidateQueries();
+      return { ok: true };
+    },
+  }),
+
+  deleteBill: defineAction({
+    request: z.object({ id: z.number().int() }),
+    response: z.object({ ok: z.boolean() }),
+    async handler(ctx, args) {
+      const db = ctx.db<typeof schema>();
+      await db.delete(schema.bills).where(eq(schema.bills.id, args.id));
+      ctx.invalidateQueries();
+      return { ok: true };
+    },
+  }),
+
+  markBillPaid: defineAction({
+    request: z.object({
+      id: z.number().int(),
+      payment_method: z.enum(["cash", "check", "card", "ach"]),
+    }),
+    response: z.object({ ok: z.boolean() }),
+    async handler(ctx, args) {
+      const db = ctx.db<typeof schema>();
+      await db.update(schema.bills).set({
+        paymentMethod: args.payment_method,
+        paidAt: new Date(),
+        updatedAt: new Date(),
+      }).where(eq(schema.bills.id, args.id));
+      ctx.invalidateQueries();
+      return { ok: true };
+    },
+  }),
+
+  listExpenseCategories: defineAction({
+    request: z.object({}),
+    response: z.object({ categories: z.array(z.object({ id: z.number(), name: z.string() })) }),
+    async handler(ctx) {
+      const db = ctx.db<typeof schema>();
+      const rows = await db.select().from(schema.expenseCategories).orderBy(asc(schema.expenseCategories.name));
+      return { categories: rows.map((r) => ({ id: r.id, name: r.name })) };
+    },
+  }),
+
+  getProfitLoss: defineAction({
+    request: z.object({
+      start_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+      end_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    }),
+    response: z.object({
+      revenue_cents: z.number(),
+      cogs_cents: z.number(),
+      gross_profit_cents: z.number(),
+      expenses_cents: z.number(),
+      expenses_by_category: z.array(z.object({ category: z.string(), amount_cents: z.number() })),
+      net_income_cents: z.number(),
+    }),
+    async handler(ctx, args) {
+      const db = ctx.db<typeof schema>();
+      // TEST INVOICES 1001-1010 are excluded — they are Oct 11, 2026 test data.
+      const TEST_INVOICE_MIN = 1001;
+      const TEST_INVOICE_MAX = 1010;
+      const startMs = new Date(args.start_date + "T00:00:00").getTime();
+      const endMs = new Date(args.end_date + "T23:59:59.999").getTime();
+
+      // Revenue: sum of sales totals in range, excluding test invoices.
+      const salesRows = await db.select({
+        invoiceNumber: schema.sales.invoiceNumber,
+        totalCents: schema.sales.totalCents,
+        createdAt: schema.sales.createdAt,
+      }).from(schema.sales);
+      let revenueCents = 0;
+      const realSaleIds = new Set<string>();
+      const saleIdByInvoice = new Map<number, string>();
+      for (const s of salesRows) {
+        const inv = s.invoiceNumber ?? 0;
+        if (inv >= TEST_INVOICE_MIN && inv <= TEST_INVOICE_MAX) continue; // test data
+        const t = s.createdAt instanceof Date ? s.createdAt.getTime() : Number(s.createdAt);
+        if (t < startMs || t > endMs) continue;
+        revenueCents += s.totalCents;
+      }
+      // COGS: need sale ids for real sales to sum line-item costs.
+      const allSales = await db.select({ id: schema.sales.id, invoiceNumber: schema.sales.invoiceNumber }).from(schema.sales);
+      const realIds = allSales.filter((s) => {
+        const inv = s.invoiceNumber ?? 0;
+        return !(inv >= TEST_INVOICE_MIN && inv <= TEST_INVOICE_MAX);
+      }).map((s) => s.id);
+      let cogsCents = 0;
+      if (realIds.length > 0) {
+        const items = await db.select({
+          saleId: schema.saleItems.saleId,
+          productId: schema.saleItems.productId,
+          quantity: schema.saleItems.quantity,
+        }).from(schema.saleItems).where(inArray(schema.saleItems.saleId, realIds));
+        const productIds = [...new Set(items.map((i) => i.productId))];
+        const costMap = new Map<number, number>();
+        if (productIds.length > 0) {
+          const prods = await db.select({ id: schema.products.id, costCents: schema.products.costCents })
+            .from(schema.products).where(inArray(schema.products.id, productIds));
+          for (const p of prods) costMap.set(p.id, p.costCents);
+        }
+        // Only count items from sales in the date range — need sale dates.
+        const saleDates = new Map<string, number>();
+        for (const s of salesRows) {
+          const inv = s.invoiceNumber ?? 0;
+          if (inv >= TEST_INVOICE_MIN && inv <= TEST_INVOICE_MAX) continue;
+          const t = s.createdAt instanceof Date ? s.createdAt.getTime() : Number(s.createdAt);
+          // find sale id via allSales
+          const match = allSales.find((a) => a.invoiceNumber === inv);
+          if (match) saleDates.set(match.id, t);
+        }
+        for (const item of items) {
+          const t = saleDates.get(item.saleId);
+          if (t === undefined || t < startMs || t > endMs) continue;
+          cogsCents += (costMap.get(item.productId) ?? 0) * item.quantity;
+        }
+      }
+
+      // Expenses: bills in range, excluding test bills.
+      const billRows = await db.select().from(schema.bills)
+        .where(and(
+          eq(schema.bills.isTest, 0),
+          gte(schema.bills.billDate, args.start_date),
+          lte(schema.bills.billDate, args.end_date),
+        ));
+      const byCategory = new Map<string, number>();
+      let expensesCents = 0;
+      for (const b of billRows) {
+        expensesCents += b.amountCents;
+        byCategory.set(b.category, (byCategory.get(b.category) ?? 0) + b.amountCents);
+      }
+      const expensesByCategory = [...byCategory.entries()]
+        .map(([category, amount_cents]) => ({ category, amount_cents }))
+        .sort((a, b) => b.amount_cents - a.amount_cents);
+
+      const grossProfit = revenueCents - cogsCents;
+      return {
+        revenue_cents: revenueCents,
+        cogs_cents: cogsCents,
+        gross_profit_cents: grossProfit,
+        expenses_cents: expensesCents,
+        expenses_by_category: expensesByCategory,
+        net_income_cents: grossProfit - expensesCents,
+      };
+    },
+  }),
+
+  getUnpaidBills: defineAction({
+    request: z.object({}),
+    response: z.object({
+      total_cents: z.number(),
+      bills: z.array(z.object({
+        id: z.number(), vendor_name: z.string(), invoice_number: z.string(),
+        bill_date: z.string(), due_date: z.string().nullable(),
+        amount_cents: z.number(), category: z.string(), notes: z.string(),
+        is_overdue: z.boolean(),
+      })),
+    }),
+    async handler(ctx) {
+      const db = ctx.db<typeof schema>();
+      const today = new Date().toISOString().slice(0, 10);
+      const rows = await db.select().from(schema.bills)
+        .where(and(eq(schema.bills.isTest, 0), eq(schema.bills.paymentMethod, "unpaid")))
+        .orderBy(asc(schema.bills.dueDate));
+      let total = 0;
+      const bills = rows.map((r) => {
+        total += r.amountCents;
+        return {
+          id: r.id, vendor_name: r.vendorName, invoice_number: r.invoiceNumber,
+          bill_date: r.billDate, due_date: r.dueDate,
+          amount_cents: r.amountCents, category: r.category, notes: r.notes,
+          is_overdue: !!r.dueDate && r.dueDate < today,
+        };
+      });
+      // Bills with no due date go last.
+      bills.sort((a, b) => {
+        if (!a.due_date && !b.due_date) return 0;
+        if (!a.due_date) return 1;
+        if (!b.due_date) return -1;
+        return a.due_date.localeCompare(b.due_date);
+      });
+      return { total_cents: total, bills };
+    },
+  }),
+
+  uploadBillPdf: defineAction({
+    request: z.object({
+      file_name: z.string().trim().min(1).max(255),
+      data_base64: z.string().min(1).max(16000000),
+      mime_type: z.literal("application/pdf"),
+    }),
+    response: z.object({
+      ok: z.boolean(), error: z.string().optional(),
+      extracted: z.object({
+        vendor_name: z.string(), invoice_number: z.string(),
+        bill_date: z.string(), due_date: z.string(),
+        amount_cents: z.number(),
+      }).nullable(),
+      blob_key: z.string().nullable(),
+    }),
+    privileged: [privileged.extractPdfText],
+    async handler(ctx, args): Promise<{
+      ok: boolean; error?: string;
+      extracted: { vendor_name: string; invoice_number: string; bill_date: string; due_date: string; amount_cents: number } | null;
+      blob_key: string | null;
+    }> {
+      const raw = args.data_base64.includes(",") ? (args.data_base64.split(",")[1] ?? "") : args.data_base64;
+      let bytes: Uint8Array;
+      try {
+        bytes = Uint8Array.from(atob(raw), (c) => c.charCodeAt(0));
+      } catch {
+        return { ok: false, error: "That PDF could not be decoded.", extracted: null, blob_key: null };
+      }
+      if (bytes.byteLength === 0) return { ok: false, error: "That PDF was empty.", extracted: null, blob_key: null };
+      if (!(bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46)) {
+        return { ok: false, error: "That file is not a PDF.", extracted: null, blob_key: null };
+      }
+      const blobKey = `bills/${crypto.randomUUID()}.pdf`;
+      await ctx.blobs.put(blobKey, bytes, { contentType: "application/pdf" });
+
+      let extracted: { vendor_name: string; invoice_number: string; bill_date: string; due_date: string; amount_cents: number } | null = null;
+      try {
+        const textResult = await ctx.executePrivileged(privileged.extractPdfText, { data_base64: raw });
+        if (textResult.ok) {
+          try {
+            extracted = await ctx.inference.complete(
+              `Read this bill or invoice PDF text and extract: vendor name, invoice number, bill date (YYYY-MM-DD), due date (YYYY-MM-DD, empty if none), and total amount in dollars. Document text:\n\n${textResult.text.slice(0, 60000)}`,
+              {
+                schema: z.object({
+                  vendor_name: z.string(), invoice_number: z.string(),
+                  bill_date: z.string(), due_date: z.string(),
+                  amount_cents: z.number().int(),
+                }),
+              },
+            );
+          } catch {
+            // AI extraction failed — fall back to regex.
+            const text = textResult.text;
+            const amtMatch = text.match(/(?:total|amount due|balance due)[:\s]*\$?([\d,]+\.\d{2})/i);
+            const invMatch = text.match(/invoice\s*(?:#|no\.?|number)?[:\s]*([A-Za-z0-9-]+)/i);
+            const dateMatch = text.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+            let billDate = "";
+            if (dateMatch) {
+              const [, m, d, y] = dateMatch;
+              billDate = `${y}-${m.padStart(2, "0")}-${d.padStart(2, "0")}`;
+            }
+            extracted = {
+              vendor_name: "",
+              invoice_number: invMatch ? invMatch[1] : "",
+              bill_date: billDate,
+              due_date: "",
+              amount_cents: amtMatch ? Math.round(parseFloat(amtMatch[1].replace(/,/g, "")) * 100) : 0,
+            };
+          }
+        }
+      } catch {
+        // PDF text extraction failed — still return the blob key so the user can attach manually.
+      }
+      return { ok: true, extracted, blob_key: blobKey };
     },
   }),
 } satisfies ActionsModule;

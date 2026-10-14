@@ -414,3 +414,48 @@ export const tasks = sqliteTable(
     index("tasks_customer_index").on(table.customerId),
   ],
 );
+
+/**
+ * Accounting (QuickBooks replacement).
+ *
+ * CRITICAL TEST-DATA NOTE (Oct 14, 2026): All sales invoices currently in the
+ * app (invoice numbers 1001-1010, created Oct 11, 2026) are TEST DATA, confirmed
+ * by Randy. The getProfitLoss action EXCLUDES those invoice numbers from revenue
+ * and COGS. New bills get isTest=0 by default; only set isTest=1 for explicitly
+ * marked test entries. When real books go live, Randy will clear the test sales.
+ */
+export const bills = sqliteTable(
+  "bills",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    vendorName: text("vendor_name").notNull(),
+    invoiceNumber: text("invoice_number").notNull().default(""),
+    billDate: text("bill_date").notNull(),
+    dueDate: text("due_date"),
+    amountCents: integer("amount_cents").notNull(),
+    category: text("category").notNull().default("Other"),
+    paymentMethod: text("payment_method", { enum: ["unpaid", "cash", "check", "card", "ach"] }).notNull().default("unpaid"),
+    paidAt: integer("paid_at", { mode: "timestamp_ms" }),
+    notes: text("notes").notNull().default(""),
+    attachmentBlobKey: text("attachment_blob_key"),
+    isTest: integer("is_test").notNull().default(0),
+    createdBy: text("created_by").notNull().default(""),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().$defaultFn(() => new Date()),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull().$defaultFn(() => new Date()),
+  },
+  (table) => [
+    index("bills_date_index").on(table.billDate),
+    index("bills_category_index").on(table.category),
+    index("bills_payment_index").on(table.paymentMethod),
+  ],
+);
+
+export const expenseCategories = sqliteTable(
+  "expense_categories",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    name: text("name").notNull(),
+    isDefault: integer("is_default").notNull().default(0),
+  },
+  (table) => [uniqueIndex("expense_categories_name_unique").on(table.name)],
+);

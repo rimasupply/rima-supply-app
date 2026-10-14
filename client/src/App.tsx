@@ -28,7 +28,7 @@ type Account = ApiResponse<typeof api, "getCustomerAccount">;
 type CustomerPreferences = ApiResponse<typeof api, "getCustomerPreferences">;
 type PreferenceItem = CustomerPreferences["most_bought"][number];
 type ManualPreference = CustomerPreferences["manual"][number];
-type View = "inventory" | "products" | "customers" | "checkout" | "settings" | "field" | "analytics" | "orders" | "markup" | "team" | "returns" | "salesorders" | "statements" | "deposits" | "users" | "help" | "tasks";
+type View = "inventory" | "products" | "customers" | "checkout" | "settings" | "field" | "analytics" | "orders" | "markup" | "team" | "returns" | "salesorders" | "statements" | "deposits" | "users" | "help" | "tasks" | "accounting";
 type DepositReport = ApiResponse<typeof api, "getDepositReport">;
 type FieldOrder = ApiResponse<typeof api, "listFieldOrders">["orders"][number];
 type Mode = "all" | "reorder";
@@ -71,6 +71,7 @@ const DepositIcon = () => <Icon><rect x="2" y="6" width="20" height="12" rx="2" 
 const HelpIcon = () => <Icon><circle cx="12" cy="12" r="9" /><path d="M9.5 9a2.5 2.5 0 0 1 5 .2c0 1.7-2.5 2.1-2.5 3.8M12 17h.01" /></Icon>;
 const MicIcon = () => <Icon size={18}><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M5 11a7 7 0 0 0 14 0M12 18v3" /></Icon>;
 const TasksIcon = () => <Icon><path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2" /><rect x="9" y="3" width="6" height="4" rx="1" /><path d="m9 14 2 2 4-4" /></Icon>;
+const AccountingIcon = () => <Icon><path d="M12 2v20M17 6.5c0-2-2.2-3-5-3s-5 1-5 3 2.2 2.6 5 3.2 5 1.4 5 3.3-2.2 3-5 3-5-1-5-3" /></Icon>;
 
 function money(cents: number) { return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(cents / 100); }
 function percent(basisPoints: number) { return `${(basisPoints / 100).toFixed(2)}%`; }
@@ -4057,6 +4058,258 @@ function DepositsView({ onOpenCustomer }: { onOpenCustomer: (id: number) => void
   </>;
 }
 
+type AccountingTab = "bills" | "pl" | "unpaid";
+type PlPreset = "month" | "lastMonth" | "ytd" | "custom";
+
+function plPresetRange(preset: PlPreset): { start: string; end: string } {
+  const now = new Date();
+  const fmt = (d: Date) => d.toISOString().slice(0, 10);
+  if (preset === "month") return { start: `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01`, end: fmt(now) };
+  if (preset === "lastMonth") {
+    const first = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    const last = new Date(now.getFullYear(), now.getMonth(), 0);
+    return { start: fmt(first), end: fmt(last) };
+  }
+  if (preset === "ytd") return { start: `${now.getFullYear()}-01-01`, end: fmt(now) };
+  return { start: "", end: "" };
+}
+
+function AccountingView() {
+  const [tab, setTab] = useState<AccountingTab>("bills");
+  const [plPreset, setPlPreset] = useState<PlPreset>("month");
+  const [plRange, setPlRange] = useState(() => plPresetRange("month"));
+  const [billFormOpen, setBillFormOpen] = useState(false);
+  const [editingBill, setEditingBill] = useState<null | { id: number; vendor_name: string; invoice_number: string; bill_date: string; due_date: string | null; amount_cents: number; category: string; notes: string }>(null);
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState("");
+  const fileRef = useRef<HTMLInputElement | null>(null);
+
+  const billsQuery = useQuery({ queryKey: ["bills"], queryFn: () => api.listBills({}) });
+  const categoriesQuery = useQuery({ queryKey: ["expense-categories"], queryFn: () => api.listExpenseCategories({}) });
+  const unpaidQuery = useQuery({ queryKey: ["unpaid-bills"], queryFn: () => api.getUnpaidBills({}), enabled: tab === "unpaid" });
+  const plQuery = useQuery({
+    queryKey: ["profit-loss", plRange.start, plRange.end],
+    queryFn: () => api.getProfitLoss({ start_date: plRange.start, end_date: plRange.end }),
+    enabled: tab === "pl" && !!plRange.start && !!plRange.end,
+  });
+
+  const pickPlPreset = (p: PlPreset) => { setPlPreset(p); if (p !== "custom") setPlRange(plPresetRange(p)); };
+  const setPlManual = (key: "start" | "end", v: string) => { setPlPreset("custom"); setPlRange((c) => ({ ...c, [key]: v })); };
+
+  const handleUpload = async (file: File) => {
+    setUploading(true); setUploadError("");
+    try {
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result as string);
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+      const result = await api.uploadBillPdf({ file_name: file.name, data_base64: dataUrl, mime_type: "application/pdf" });
+      if (!result.ok) { setUploadError(result.error ?? "Could not read that PDF."); return; }
+      // Pre-fill the bill form with extracted data.
+      const ex = result.extracted;
+      setEditingBill({
+        id: 0,
+        vendor_name: ex?.vendor_name ?? "",
+        invoice_number: ex?.invoice_number ?? "",
+        bill_date: ex?.bill_date ?? new Date().toISOString().slice(0, 10),
+        due_date: ex?.due_date || null,
+        amount_cents: ex?.amount_cents ?? 0,
+        category: "Other",
+        notes: `Uploaded from ${file.name}`,
+      });
+      setBillFormOpen(true);
+    } catch {
+      setUploadError("Could not read that file. Try again.");
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const bills = billsQuery.data?.bills ?? [];
+  const categories = categoriesQuery.data?.categories ?? [];
+  const pl = plQuery.data;
+
+  return <>
+    <section className="plain-command"><div><p>ACCOUNTING</p><h1>Bills &amp; P&amp;L</h1></div></section>
+    <p className="field-intro">Track every business bill and expense here — upload supplier invoices or enter cash and check payments by hand. The P&amp;L pulls real sales (test invoices excluded) so you get true numbers for the accountant.</p>
+
+    <div className="pill-tabs" role="tablist" aria-label="Accounting sections">
+      {(["bills", "pl", "unpaid"] as Array<[AccountingTab, string]>).map(([v, label]) => (
+        <button key={v} type="button" role="tab" aria-selected={tab === v} className={tab === v ? "active" : ""} onClick={() => setTab(v)}>{label === "bills" ? "Bills" : label === "pl" ? "P&L" : "Unpaid"}</button>
+      ))}
+    </div>
+
+    {tab === "bills" && <>
+      <div className="accounting-toolbar">
+        <button type="button" className="primary-button" onClick={() => { setEditingBill(null); setBillFormOpen(true); }}>Add Bill</button>
+        <button type="button" className="secondary-button" disabled={uploading} onClick={() => fileRef.current?.click()}>{uploading ? "Reading PDF…" : "Upload Bill PDF"}</button>
+        <input ref={fileRef} type="file" accept="application/pdf" hidden onChange={(e) => { const f = e.target.files?.[0]; if (f) handleUpload(f); e.target.value = ""; }} />
+      </div>
+      {uploadError ? <p className="field-error">{uploadError}</p> : null}
+      {billsQuery.isPending ? <div className="loading-list"><span /><span /></div> :
+        bills.length === 0 ? <div className="empty-state"><h2>No bills yet</h2><p>Add your first bill above — supplier invoices, rent, utilities, anything the business pays.</p></div> :
+        <div className="accounting-list">{bills.map((b) => <BillRow key={b.id} bill={b} onEdit={() => { setEditingBill({ id: b.id, vendor_name: b.vendor_name, invoice_number: b.invoice_number, bill_date: b.bill_date, due_date: b.due_date, amount_cents: b.amount_cents, category: b.category, notes: b.notes }); setBillFormOpen(true); }} />)}</div>}
+    </>}
+
+    {tab === "pl" && <>
+      <section className="analytics-filters" aria-label="P&L date range">
+        <div className="preset-chips" role="group" aria-label="P&L presets">
+          {([["month", "This month"], ["lastMonth", "Last month"], ["ytd", "Year to date"], ["custom", "Custom"]] as Array<[PlPreset, string]>).map(([v, label]) => <button key={v} type="button" className={plPreset === v ? "active" : ""} onClick={() => pickPlPreset(v)}>{label}</button>)}
+        </div>
+        <div className="date-inputs">
+          <label><span>From</span><input type="date" value={plRange.start} onChange={(e) => setPlManual("start", e.target.value)} /></label>
+          <label><span>To</span><input type="date" value={plRange.end} onChange={(e) => setPlManual("end", e.target.value)} /></label>
+        </div>
+      </section>
+      {plQuery.isPending ? <div className="loading-list"><span /><span /></div> : pl ? <>
+        <section className="accounting-pl" aria-label="Profit and loss statement">
+          <div className="pl-row"><span>Revenue</span><strong>{money(pl.revenue_cents)}</strong></div>
+          <div className="pl-row"><span>Cost of goods sold</span><strong>({money(pl.cogs_cents)})</strong></div>
+          <div className="pl-row pl-subtotal"><span>Gross profit</span><strong>{money(pl.gross_profit_cents)}</strong></div>
+          <div className="pl-section-label">Expenses</div>
+          {pl.expenses_by_category.length === 0 ? <div className="pl-row"><span className="muted">No expenses recorded</span><strong>—</strong></div> :
+            pl.expenses_by_category.map((e) => <div key={e.category} className="pl-row"><span>{e.category}</span><strong>({money(e.amount_cents)})</strong></div>)}
+          <div className="pl-row"><span>Total expenses</span><strong>({money(pl.expenses_cents)})</strong></div>
+          <div className={`pl-row pl-total ${pl.net_income_cents < 0 ? "negative" : ""}`}><span>Net income</span><strong>{money(pl.net_income_cents)}</strong></div>
+        </section>
+        <p className="field-note">Revenue and COGS come from real sales only — test invoices 1001–1010 are excluded. Expenses come from bills entered above.</p>
+      </> : null}
+    </>}
+
+    {tab === "unpaid" && <>
+      {unpaidQuery.isPending ? <div className="loading-list"><span /><span /></div> :
+        !unpaidQuery.data || unpaidQuery.data.bills.length === 0 ? <div className="empty-state"><h2>Nothing unpaid</h2><p>Every bill is paid up. Nice.</p></div> : <>
+          <div className="accounting-totals"><div><span>Total unpaid</span><strong>{money(unpaidQuery.data.total_cents)}</strong></div></div>
+          <div className="accounting-list">{unpaidQuery.data.bills.map((b) => (
+            <div key={b.id} className={`accounting-card${b.is_overdue ? " overdue" : ""}`}>
+              <span className="customer-copy"><strong>{b.vendor_name}</strong><small>{b.bill_date}{b.due_date ? ` · Due ${b.due_date}` : " · No due date"}{b.is_overdue ? " · OVERDUE" : ""}{b.invoice_number ? ` · #${b.invoice_number}` : ""}</small></span>
+              <span className="balance-label"><b>{money(b.amount_cents)}</b></span>
+              <MarkBillPaidButton billId={b.id} />
+            </div>
+          ))}</div>
+        </>}
+    </>}
+
+    {billFormOpen ? <BillForm
+      categories={categories.map((c) => c.name)}
+      initial={editingBill}
+      onClose={() => { setBillFormOpen(false); setEditingBill(null); }}
+    /> : null}
+  </>;
+}
+
+function BillRow({ bill, onEdit }: {
+  bill: { id: number; vendor_name: string; invoice_number: string; bill_date: string; due_date: string | null; amount_cents: number; category: string; payment_method: string; paid_at: string | null; notes: string; has_attachment: boolean };
+  onEdit: () => void;
+}) {
+  const queryClient = useQueryClient();
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const markPaid = useMutation({
+    mutationFn: (method: "cash" | "check" | "card" | "ach") => api.markBillPaid({ id: bill.id, payment_method: method }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["bills"] }),
+  });
+  const remove = useMutation({
+    mutationFn: () => api.deleteBill({ id: bill.id }),
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["bills"] }); queryClient.invalidateQueries({ queryKey: ["unpaid-bills"] }); },
+  });
+  const isPaid = bill.payment_method !== "unpaid";
+  return <div className="accounting-card">
+    <span className="customer-copy">
+      <strong>{bill.vendor_name}</strong>
+      <small>{bill.bill_date}{bill.invoice_number ? ` · #${bill.invoice_number}` : ""} · <span className="category-badge">{bill.category}</span></small>
+      {bill.notes ? <small className="muted">{bill.notes}</small> : null}
+    </span>
+    <span className="balance-label"><b>{money(bill.amount_cents)}</b><small className={isPaid ? "paid" : "unpaid"}>{isPaid ? `Paid · ${bill.payment_method}` : "Unpaid"}</small></span>
+    <span className="accounting-actions">
+      {!isPaid ? <select aria-label={`Mark bill ${bill.id} paid`} defaultValue="" onChange={(e) => { if (e.target.value) markPaid.mutate(e.target.value as "cash" | "check" | "card" | "ach"); }}>
+        <option value="" disabled>Mark paid…</option>
+        <option value="cash">Cash</option><option value="check">Check</option><option value="card">Card</option><option value="ach">ACH</option>
+      </select> : null}
+      <button type="button" className="link-button" onClick={onEdit}>Edit</button>
+      {confirmDelete
+        ? <><button type="button" className="link-button danger" onClick={() => remove.mutate()}>Confirm</button><button type="button" className="link-button" onClick={() => setConfirmDelete(false)}>Keep</button></>
+        : <button type="button" className="link-button danger" onClick={() => setConfirmDelete(true)}>Delete</button>}
+    </span>
+  </div>;
+}
+
+function MarkBillPaidButton({ billId }: { billId: number }) {
+  const queryClient = useQueryClient();
+  const markPaid = useMutation({
+    mutationFn: (method: "cash" | "check" | "card" | "ach") => api.markBillPaid({ id: billId, payment_method: method }),
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["bills"] }); queryClient.invalidateQueries({ queryKey: ["unpaid-bills"] }); },
+  });
+  return <select aria-label={`Mark bill ${billId} paid`} defaultValue="" onChange={(e) => { if (e.target.value) markPaid.mutate(e.target.value as "cash" | "check" | "card" | "ach"); }}>
+    <option value="" disabled>Mark paid…</option>
+    <option value="cash">Cash</option><option value="check">Check</option><option value="card">Card</option><option value="ach">ACH</option>
+  </select>;
+}
+
+function BillForm({ categories, initial, onClose }: {
+  categories: string[];
+  initial: null | { id: number; vendor_name: string; invoice_number: string; bill_date: string; due_date: string | null; amount_cents: number; category: string; notes: string };
+  onClose: () => void;
+}) {
+  const queryClient = useQueryClient();
+  const [vendor, setVendor] = useState(initial?.vendor_name ?? "");
+  const [invoice, setInvoice] = useState(initial?.invoice_number ?? "");
+  const [billDate, setBillDate] = useState(initial?.bill_date ?? new Date().toISOString().slice(0, 10));
+  const [dueDate, setDueDate] = useState(initial?.due_date ?? "");
+  const [amount, setAmount] = useState(initial ? (initial.amount_cents / 100).toFixed(2) : "");
+  const [category, setCategory] = useState(initial?.category ?? "Other");
+  const [paymentMethod, setPaymentMethod] = useState("unpaid");
+  const [notes, setNotes] = useState(initial?.notes ?? "");
+  const [error, setError] = useState("");
+
+  const save = useMutation({
+    mutationFn: () => {
+      const cents = Math.round(parseFloat(amount || "0") * 100);
+      if (!vendor.trim()) throw new Error("Vendor name is required.");
+      if (!billDate) throw new Error("Bill date is required.");
+      if (cents < 0) throw new Error("Amount can't be negative.");
+      return initial && initial.id > 0
+        ? api.updateBill({ id: initial.id, vendor_name: vendor.trim(), invoice_number: invoice.trim(), bill_date: billDate, due_date: dueDate || null, amount_cents: cents, category, notes: notes.trim() })
+        : api.createBill({ vendor_name: vendor.trim(), invoice_number: invoice.trim(), bill_date: billDate, due_date: dueDate || undefined, amount_cents: cents, category, payment_method: paymentMethod as "unpaid" | "cash" | "check" | "card" | "ach", notes: notes.trim() });
+    },
+    onSuccess: (r) => {
+      if (!r.ok) { setError(r.error ?? "Could not save that bill."); return; }
+      queryClient.invalidateQueries({ queryKey: ["bills"] });
+      queryClient.invalidateQueries({ queryKey: ["unpaid-bills"] });
+      onClose();
+    },
+    onError: (e) => setError(e instanceof Error ? e.message : "Could not save that bill."),
+  });
+
+  return <div className="modal-backdrop" onClick={onClose}>
+    <div className="modal-card" onClick={(e) => e.stopPropagation()} role="dialog" aria-label={initial?.id ? "Edit bill" : "Add bill"}>
+      <h2>{initial?.id ? "Edit bill" : "Add bill"}</h2>
+      {error ? <p className="field-error">{error}</p> : null}
+      <label><span>Vendor</span><input value={vendor} onChange={(e) => setVendor(e.target.value)} placeholder="National Oak, Eversource…" /></label>
+      <div className="form-row">
+        <label><span>Invoice #</span><input value={invoice} onChange={(e) => setInvoice(e.target.value)} placeholder="Optional" /></label>
+        <label><span>Amount</span><input type="number" step="0.01" min="0" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0.00" /></label>
+      </div>
+      <div className="form-row">
+        <label><span>Bill date</span><input type="date" value={billDate} onChange={(e) => setBillDate(e.target.value)} /></label>
+        <label><span>Due date</span><input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} /></label>
+      </div>
+      <div className="form-row">
+        <label><span>Category</span><select value={category} onChange={(e) => setCategory(e.target.value)}>{categories.map((c) => <option key={c} value={c}>{c}</option>)}</select></label>
+        {!(initial && initial.id > 0) ? <label><span>Payment</span><select value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value)}>
+          <option value="unpaid">Unpaid</option><option value="cash">Cash</option><option value="check">Check</option><option value="card">Card</option><option value="ach">ACH</option>
+        </select></label> : null}
+      </div>
+      <label><span>Notes</span><textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={2} placeholder="Optional notes" /></label>
+      <div className="modal-actions">
+        <button type="button" className="secondary-button" onClick={onClose}>Cancel</button>
+        <button type="button" className="primary-button" disabled={save.isPending} onClick={() => save.mutate()}>{save.isPending ? "Saving…" : "Save bill"}</button>
+      </div>
+    </div>
+  </div>;
+}
+
 function SettingsView() {
   const queryClient = useQueryClient();
   const settings = useQuery({ queryKey: ["invoice-settings"], queryFn: () => api.getInvoiceSettings({}) });
@@ -4603,7 +4856,7 @@ export function App() {
         <nav className="sidebar-nav" aria-label="Main sections">
           <div className="sidebar-group"><p>Counter & field</p>{navItem("checkout", "Checkout", <CartIcon />)}{navItem("salesorders", "Orders", <FileIcon />)}{navItem("field", "Field Orders", <ClipboardIcon />, fieldDraftCount)}{navItem("tasks", "Tasks", <TasksIcon />)}{navItem("customers", "Customers", <UserIcon />)}{navItem("statements", "Statements", <MailIcon />)}</div>
           <div className="sidebar-group"><p>Stock & ordering</p>{navItem("products", "Products", <TagIcon />)}{navItem("inventory", "Inventory", <BoxIcon />)}{navItem("orders", "Purchase", <TruckIcon />, purchaseBadge)}</div>
-          <div className="sidebar-group"><p>Business</p>{navItem("analytics", "Analytics", <ChartIcon />)}{navItem("deposits", "Deposits", <DepositIcon />)}{navItem("returns", "Returns", <ReturnIcon />)}{navItem("markup", "Markup Rules", <TagIcon />)}{navItem("team", "Sales Team", <UserIcon />)}{navItem("settings", "Settings", <SettingsIcon />)}{user?.role === "admin" ? navItem("users", "Users", <UserIcon />) : null}</div>
+          <div className="sidebar-group"><p>Business</p>{navItem("analytics", "Analytics", <ChartIcon />)}{navItem("deposits", "Deposits", <DepositIcon />)}{navItem("accounting", "Accounting", <AccountingIcon />)}{navItem("returns", "Returns", <ReturnIcon />)}{navItem("markup", "Markup Rules", <TagIcon />)}{navItem("team", "Sales Team", <UserIcon />)}{navItem("settings", "Settings", <SettingsIcon />)}{user?.role === "admin" ? navItem("users", "Users", <UserIcon />) : null}</div>
           <div className="sidebar-group"><p>Resources</p>{navItem("help", "Help & Training", <HelpIcon />)}</div>
         </nav>
         <div className="sidebar-user">
@@ -4611,7 +4864,7 @@ export function App() {
           <button type="button" className="sidebar-logout" onClick={() => void logout()}>Sign out</button>
         </div>
       </aside>
-      <main className="app-main">{view === "checkout" ? <CheckoutView onOpenCustomer={setAccountId} /> : view === "salesorders" ? <OrdersView onOpenCustomer={setAccountId} onOpenField={() => setView("field")} /> : view === "statements" ? <StatementsView onOpenCustomer={setAccountId} /> : view === "deposits" ? <DepositsView onOpenCustomer={setAccountId} /> : view === "field" ? <FieldOrdersView /> : view === "products" ? <ProductManagementView /> : view === "customers" ? <CustomersView /> : view === "inventory" ? <InventoryView /> : view === "orders" ? <PurchaseOrdersView /> : view === "analytics" ? <AnalyticsView /> : view === "markup" ? <MarkupRulesView /> : view === "team" ? <SalesTeamView /> : view === "returns" ? <ReturnsSummaryView /> : view === "users" ? <UserManagementView /> : view === "help" ? <HelpView /> : view === "tasks" ? <TasksView /> : <SettingsView />}</main>
+      <main className="app-main">{view === "checkout" ? <CheckoutView onOpenCustomer={setAccountId} /> : view === "salesorders" ? <OrdersView onOpenCustomer={setAccountId} onOpenField={() => setView("field")} /> : view === "statements" ? <StatementsView onOpenCustomer={setAccountId} /> : view === "deposits" ? <DepositsView onOpenCustomer={setAccountId} /> : view === "field" ? <FieldOrdersView /> : view === "products" ? <ProductManagementView /> : view === "customers" ? <CustomersView /> : view === "inventory" ? <InventoryView /> : view === "orders" ? <PurchaseOrdersView /> : view === "analytics" ? <AnalyticsView /> : view === "markup" ? <MarkupRulesView /> : view === "team" ? <SalesTeamView /> : view === "returns" ? <ReturnsSummaryView /> : view === "users" ? <UserManagementView /> : view === "help" ? <HelpView /> : view === "tasks" ? <TasksView /> : view === "accounting" ? <AccountingView /> : <SettingsView />}</main>
     </div>
     {accountId !== null ? <AccountSheet id={accountId} onClose={() => setAccountId(null)} /> : null}
     <div id="rima-print-area" style={{ display: "none" }} aria-hidden="true" />

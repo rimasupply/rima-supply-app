@@ -29076,8 +29076,10 @@ import { join as join4, resolve as resolve2 } from "path";
 var exports_schema = {};
 __export(exports_schema, {
   appSettings: () => appSettings,
+  bills: () => bills,
   customerPreferences: () => customerPreferences,
   customers: () => customers,
+  expenseCategories: () => expenseCategories,
   fieldOrderItems: () => fieldOrderItems,
   fieldOrders: () => fieldOrders,
   markupRules: () => markupRules,
@@ -29409,6 +29411,32 @@ var tasks = sqliteTable("tasks", {
   index("tasks_due_index").on(table.dueDate),
   index("tasks_customer_index").on(table.customerId)
 ]);
+var bills = sqliteTable("bills", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  vendorName: text("vendor_name").notNull(),
+  invoiceNumber: text("invoice_number").notNull().default(""),
+  billDate: text("bill_date").notNull(),
+  dueDate: text("due_date"),
+  amountCents: integer("amount_cents").notNull(),
+  category: text("category").notNull().default("Other"),
+  paymentMethod: text("payment_method", { enum: ["unpaid", "cash", "check", "card", "ach"] }).notNull().default("unpaid"),
+  paidAt: integer("paid_at", { mode: "timestamp_ms" }),
+  notes: text("notes").notNull().default(""),
+  attachmentBlobKey: text("attachment_blob_key"),
+  isTest: integer("is_test").notNull().default(0),
+  createdBy: text("created_by").notNull().default(""),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().$defaultFn(() => new Date),
+  updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull().$defaultFn(() => new Date)
+}, (table) => [
+  index("bills_date_index").on(table.billDate),
+  index("bills_category_index").on(table.category),
+  index("bills_payment_index").on(table.paymentMethod)
+]);
+var expenseCategories = sqliteTable("expense_categories", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  name: text("name").notNull(),
+  isDefault: integer("is_default").notNull().default(0)
+}, (table) => [uniqueIndex("expense_categories_name_unique").on(table.name)]);
 
 // node_modules/zod/v4/core/core.js
 var _a;
@@ -52281,6 +52309,373 @@ ${args.transcript.slice(0, 15000)}`, { schema: voiceNoteSchema, timeout_secs: 60
       const typeRank = { visit: 0, sales_call: 1, task: 2 };
       out.sort((a, b) => prioRank[a.priority] - prioRank[b.priority] || typeRank[a.task_type] - typeRank[b.task_type] || a.title.localeCompare(b.title));
       return { tasks: out };
+    }
+  }),
+  listBills: defineAction({
+    request: object({
+      start_date: string2().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+      end_date: string2().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+      category: string2().optional(),
+      unpaid_only: boolean2().default(false)
+    }),
+    response: object({
+      bills: array(object({
+        id: number2(),
+        vendor_name: string2(),
+        invoice_number: string2(),
+        bill_date: string2(),
+        due_date: string2().nullable(),
+        amount_cents: number2(),
+        category: string2(),
+        payment_method: string2(),
+        paid_at: string2().nullable(),
+        notes: string2(),
+        has_attachment: boolean2()
+      }))
+    }),
+    async handler(ctx, args) {
+      const db = ctx.db();
+      const conditions = [eq(bills.isTest, 0)];
+      if (args.start_date)
+        conditions.push(gte(bills.billDate, args.start_date));
+      if (args.end_date)
+        conditions.push(lte(bills.billDate, args.end_date));
+      if (args.category)
+        conditions.push(eq(bills.category, args.category));
+      if (args.unpaid_only)
+        conditions.push(eq(bills.paymentMethod, "unpaid"));
+      const rows = await db.select().from(bills).where(and(...conditions)).orderBy(desc(bills.billDate)).limit(500);
+      return {
+        bills: rows.map((r) => ({
+          id: r.id,
+          vendor_name: r.vendorName,
+          invoice_number: r.invoiceNumber,
+          bill_date: r.billDate,
+          due_date: r.dueDate,
+          amount_cents: r.amountCents,
+          category: r.category,
+          payment_method: r.paymentMethod,
+          paid_at: r.paidAt ? r.paidAt.toISOString() : null,
+          notes: r.notes,
+          has_attachment: !!r.attachmentBlobKey
+        }))
+      };
+    }
+  }),
+  createBill: defineAction({
+    request: object({
+      vendor_name: string2().trim().min(1).max(200),
+      invoice_number: string2().trim().max(100).default(""),
+      bill_date: string2().regex(/^\d{4}-\d{2}-\d{2}$/),
+      due_date: string2().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+      amount_cents: number2().int().min(0),
+      category: string2().trim().min(1).max(100),
+      payment_method: _enum(["unpaid", "cash", "check", "card", "ach"]).default("unpaid"),
+      notes: string2().max(2000).default("")
+    }),
+    response: object({ ok: boolean2(), error: string2().optional(), bill_id: number2().optional() }),
+    async handler(ctx, args) {
+      const db = ctx.db();
+      const now = new Date;
+      const [row] = await db.insert(bills).values({
+        vendorName: args.vendor_name,
+        invoiceNumber: args.invoice_number,
+        billDate: args.bill_date,
+        dueDate: args.due_date ?? null,
+        amountCents: args.amount_cents,
+        category: args.category,
+        paymentMethod: args.payment_method,
+        paidAt: args.payment_method === "unpaid" ? null : now,
+        notes: args.notes,
+        isTest: 0,
+        createdBy: ctx.user?.displayName ?? "",
+        createdAt: now,
+        updatedAt: now
+      }).returning({ id: bills.id });
+      ctx.invalidateQueries();
+      return { ok: true, bill_id: row.id };
+    }
+  }),
+  updateBill: defineAction({
+    request: object({
+      id: number2().int(),
+      vendor_name: string2().trim().min(1).max(200).optional(),
+      invoice_number: string2().trim().max(100).optional(),
+      bill_date: string2().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+      due_date: string2().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
+      amount_cents: number2().int().min(0).optional(),
+      category: string2().trim().min(1).max(100).optional(),
+      notes: string2().max(2000).optional()
+    }),
+    response: object({ ok: boolean2(), error: string2().optional() }),
+    async handler(ctx, args) {
+      const db = ctx.db();
+      const { id, ...fields } = args;
+      const patch = { updatedAt: new Date };
+      if (fields.vendor_name !== undefined)
+        patch.vendorName = fields.vendor_name;
+      if (fields.invoice_number !== undefined)
+        patch.invoiceNumber = fields.invoice_number;
+      if (fields.bill_date !== undefined)
+        patch.billDate = fields.bill_date;
+      if (fields.due_date !== undefined)
+        patch.dueDate = fields.due_date;
+      if (fields.amount_cents !== undefined)
+        patch.amountCents = fields.amount_cents;
+      if (fields.category !== undefined)
+        patch.category = fields.category;
+      if (fields.notes !== undefined)
+        patch.notes = fields.notes;
+      await db.update(bills).set(patch).where(eq(bills.id, id));
+      ctx.invalidateQueries();
+      return { ok: true };
+    }
+  }),
+  deleteBill: defineAction({
+    request: object({ id: number2().int() }),
+    response: object({ ok: boolean2() }),
+    async handler(ctx, args) {
+      const db = ctx.db();
+      await db.delete(bills).where(eq(bills.id, args.id));
+      ctx.invalidateQueries();
+      return { ok: true };
+    }
+  }),
+  markBillPaid: defineAction({
+    request: object({
+      id: number2().int(),
+      payment_method: _enum(["cash", "check", "card", "ach"])
+    }),
+    response: object({ ok: boolean2() }),
+    async handler(ctx, args) {
+      const db = ctx.db();
+      await db.update(bills).set({
+        paymentMethod: args.payment_method,
+        paidAt: new Date,
+        updatedAt: new Date
+      }).where(eq(bills.id, args.id));
+      ctx.invalidateQueries();
+      return { ok: true };
+    }
+  }),
+  listExpenseCategories: defineAction({
+    request: object({}),
+    response: object({ categories: array(object({ id: number2(), name: string2() })) }),
+    async handler(ctx) {
+      const db = ctx.db();
+      const rows = await db.select().from(expenseCategories).orderBy(asc(expenseCategories.name));
+      return { categories: rows.map((r) => ({ id: r.id, name: r.name })) };
+    }
+  }),
+  getProfitLoss: defineAction({
+    request: object({
+      start_date: string2().regex(/^\d{4}-\d{2}-\d{2}$/),
+      end_date: string2().regex(/^\d{4}-\d{2}-\d{2}$/)
+    }),
+    response: object({
+      revenue_cents: number2(),
+      cogs_cents: number2(),
+      gross_profit_cents: number2(),
+      expenses_cents: number2(),
+      expenses_by_category: array(object({ category: string2(), amount_cents: number2() })),
+      net_income_cents: number2()
+    }),
+    async handler(ctx, args) {
+      const db = ctx.db();
+      const TEST_INVOICE_MIN = 1001;
+      const TEST_INVOICE_MAX = 1010;
+      const startMs = new Date(args.start_date + "T00:00:00").getTime();
+      const endMs = new Date(args.end_date + "T23:59:59.999").getTime();
+      const salesRows = await db.select({
+        invoiceNumber: sales.invoiceNumber,
+        totalCents: sales.totalCents,
+        createdAt: sales.createdAt
+      }).from(sales);
+      let revenueCents = 0;
+      const realSaleIds = new Set;
+      const saleIdByInvoice = new Map;
+      for (const s of salesRows) {
+        const inv = s.invoiceNumber ?? 0;
+        if (inv >= TEST_INVOICE_MIN && inv <= TEST_INVOICE_MAX)
+          continue;
+        const t = s.createdAt instanceof Date ? s.createdAt.getTime() : Number(s.createdAt);
+        if (t < startMs || t > endMs)
+          continue;
+        revenueCents += s.totalCents;
+      }
+      const allSales = await db.select({ id: sales.id, invoiceNumber: sales.invoiceNumber }).from(sales);
+      const realIds = allSales.filter((s) => {
+        const inv = s.invoiceNumber ?? 0;
+        return !(inv >= TEST_INVOICE_MIN && inv <= TEST_INVOICE_MAX);
+      }).map((s) => s.id);
+      let cogsCents = 0;
+      if (realIds.length > 0) {
+        const items = await db.select({
+          saleId: saleItems.saleId,
+          productId: saleItems.productId,
+          quantity: saleItems.quantity
+        }).from(saleItems).where(inArray(saleItems.saleId, realIds));
+        const productIds = [...new Set(items.map((i) => i.productId))];
+        const costMap = new Map;
+        if (productIds.length > 0) {
+          const prods = await db.select({ id: products.id, costCents: products.costCents }).from(products).where(inArray(products.id, productIds));
+          for (const p of prods)
+            costMap.set(p.id, p.costCents);
+        }
+        const saleDates = new Map;
+        for (const s of salesRows) {
+          const inv = s.invoiceNumber ?? 0;
+          if (inv >= TEST_INVOICE_MIN && inv <= TEST_INVOICE_MAX)
+            continue;
+          const t = s.createdAt instanceof Date ? s.createdAt.getTime() : Number(s.createdAt);
+          const match = allSales.find((a) => a.invoiceNumber === inv);
+          if (match)
+            saleDates.set(match.id, t);
+        }
+        for (const item of items) {
+          const t = saleDates.get(item.saleId);
+          if (t === undefined || t < startMs || t > endMs)
+            continue;
+          cogsCents += (costMap.get(item.productId) ?? 0) * item.quantity;
+        }
+      }
+      const billRows = await db.select().from(bills).where(and(eq(bills.isTest, 0), gte(bills.billDate, args.start_date), lte(bills.billDate, args.end_date)));
+      const byCategory = new Map;
+      let expensesCents = 0;
+      for (const b of billRows) {
+        expensesCents += b.amountCents;
+        byCategory.set(b.category, (byCategory.get(b.category) ?? 0) + b.amountCents);
+      }
+      const expensesByCategory = [...byCategory.entries()].map(([category, amount_cents]) => ({ category, amount_cents })).sort((a, b) => b.amount_cents - a.amount_cents);
+      const grossProfit = revenueCents - cogsCents;
+      return {
+        revenue_cents: revenueCents,
+        cogs_cents: cogsCents,
+        gross_profit_cents: grossProfit,
+        expenses_cents: expensesCents,
+        expenses_by_category: expensesByCategory,
+        net_income_cents: grossProfit - expensesCents
+      };
+    }
+  }),
+  getUnpaidBills: defineAction({
+    request: object({}),
+    response: object({
+      total_cents: number2(),
+      bills: array(object({
+        id: number2(),
+        vendor_name: string2(),
+        invoice_number: string2(),
+        bill_date: string2(),
+        due_date: string2().nullable(),
+        amount_cents: number2(),
+        category: string2(),
+        notes: string2(),
+        is_overdue: boolean2()
+      }))
+    }),
+    async handler(ctx) {
+      const db = ctx.db();
+      const today = new Date().toISOString().slice(0, 10);
+      const rows = await db.select().from(bills).where(and(eq(bills.isTest, 0), eq(bills.paymentMethod, "unpaid"))).orderBy(asc(bills.dueDate));
+      let total = 0;
+      const bills2 = rows.map((r) => {
+        total += r.amountCents;
+        return {
+          id: r.id,
+          vendor_name: r.vendorName,
+          invoice_number: r.invoiceNumber,
+          bill_date: r.billDate,
+          due_date: r.dueDate,
+          amount_cents: r.amountCents,
+          category: r.category,
+          notes: r.notes,
+          is_overdue: !!r.dueDate && r.dueDate < today
+        };
+      });
+      bills2.sort((a, b) => {
+        if (!a.due_date && !b.due_date)
+          return 0;
+        if (!a.due_date)
+          return 1;
+        if (!b.due_date)
+          return -1;
+        return a.due_date.localeCompare(b.due_date);
+      });
+      return { total_cents: total, bills: bills2 };
+    }
+  }),
+  uploadBillPdf: defineAction({
+    request: object({
+      file_name: string2().trim().min(1).max(255),
+      data_base64: string2().min(1).max(16000000),
+      mime_type: literal("application/pdf")
+    }),
+    response: object({
+      ok: boolean2(),
+      error: string2().optional(),
+      extracted: object({
+        vendor_name: string2(),
+        invoice_number: string2(),
+        bill_date: string2(),
+        due_date: string2(),
+        amount_cents: number2()
+      }).nullable(),
+      blob_key: string2().nullable()
+    }),
+    privileged: [privileged.extractPdfText],
+    async handler(ctx, args) {
+      const raw = args.data_base64.includes(",") ? args.data_base64.split(",")[1] ?? "" : args.data_base64;
+      let bytes;
+      try {
+        bytes = Uint8Array.from(atob(raw), (c) => c.charCodeAt(0));
+      } catch {
+        return { ok: false, error: "That PDF could not be decoded.", extracted: null, blob_key: null };
+      }
+      if (bytes.byteLength === 0)
+        return { ok: false, error: "That PDF was empty.", extracted: null, blob_key: null };
+      if (!(bytes[0] === 37 && bytes[1] === 80 && bytes[2] === 68 && bytes[3] === 70)) {
+        return { ok: false, error: "That file is not a PDF.", extracted: null, blob_key: null };
+      }
+      const blobKey = `bills/${crypto.randomUUID()}.pdf`;
+      await ctx.blobs.put(blobKey, bytes, { contentType: "application/pdf" });
+      let extracted = null;
+      try {
+        const textResult = await ctx.executePrivileged(privileged.extractPdfText, { data_base64: raw });
+        if (textResult.ok) {
+          try {
+            extracted = await ctx.inference.complete(`Read this bill or invoice PDF text and extract: vendor name, invoice number, bill date (YYYY-MM-DD), due date (YYYY-MM-DD, empty if none), and total amount in dollars. Document text:
+
+${textResult.text.slice(0, 60000)}`, {
+              schema: object({
+                vendor_name: string2(),
+                invoice_number: string2(),
+                bill_date: string2(),
+                due_date: string2(),
+                amount_cents: number2().int()
+              })
+            });
+          } catch {
+            const text = textResult.text;
+            const amtMatch = text.match(/(?:total|amount due|balance due)[:\s]*\$?([\d,]+\.\d{2})/i);
+            const invMatch = text.match(/invoice\s*(?:#|no\.?|number)?[:\s]*([A-Za-z0-9-]+)/i);
+            const dateMatch = text.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+            let billDate = "";
+            if (dateMatch) {
+              const [, m, d, y] = dateMatch;
+              billDate = `${y}-${m.padStart(2, "0")}-${d.padStart(2, "0")}`;
+            }
+            extracted = {
+              vendor_name: "",
+              invoice_number: invMatch ? invMatch[1] : "",
+              bill_date: billDate,
+              due_date: "",
+              amount_cents: amtMatch ? Math.round(parseFloat(amtMatch[1].replace(/,/g, "")) * 100) : 0
+            };
+          }
+        }
+      } catch {}
+      return { ok: true, extracted, blob_key: blobKey };
     }
   })
 };

@@ -1251,3 +1251,37 @@ button:focus-visible, input:focus-visible { outline: 3px solid color-mix(in srgb
   .tasks-card { padding: 10px 12px; }
   .tasks-actions { flex-direction: column; }
 }
+
+/* ── Accounting ── */
+.accounting-toolbar { display: flex; gap: 10px; margin: 14px 0; flex-wrap: wrap; }
+.accounting-list { display: flex; flex-direction: column; gap: 10px; }
+.accounting-card { display: flex; align-items: center; gap: 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; }
+.accounting-card.overdue { border-left: 4px solid var(--danger, #d33); }
+.accounting-card .customer-copy { flex: 1; min-width: 0; }
+.accounting-card .balance-label { text-align: right; white-space: nowrap; }
+.accounting-card .balance-label small { display: block; font-size: 0.78em; }
+.accounting-card .balance-label small.paid { color: var(--success, #2a7); }
+.accounting-card .balance-label small.unpaid { color: var(--warning, #c80); font-weight: 600; }
+.accounting-actions { display: flex; gap: 8px; align-items: center; }
+.accounting-actions select { padding: 6px 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface); }
+.category-badge { display: inline-block; background: var(--accent-soft, #ffe9a8); color: var(--text); font-size: 0.78em; padding: 2px 8px; border-radius: 20px; }
+.accounting-totals { display: flex; gap: 12px; margin: 12px 0; }
+.accounting-totals > div { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 12px 16px; }
+.accounting-totals span { display: block; font-size: 0.8em; color: var(--muted); }
+.accounting-totals strong { font-size: 1.3em; }
+
+.accounting-pl { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 6px 0; margin-top: 12px; }
+.pl-row { display: flex; justify-content: space-between; padding: 10px 16px; border-bottom: 1px solid var(--border); }
+.pl-row:last-child { border-bottom: none; }
+.pl-row span { color: var(--text); }
+.pl-row strong { font-variant-numeric: tabular-nums; }
+.pl-row .muted { color: var(--muted); }
+.pl-subtotal { font-weight: 600; background: var(--surface-alt, rgba(0,0,0,0.03)); }
+.pl-section-label { padding: 10px 16px 4px; font-size: 0.8em; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); font-weight: 600; }
+.pl-total { font-size: 1.15em; font-weight: 700; border-top: 2px solid var(--text); }
+.pl-total.negative strong { color: var(--danger, #d33); }
+
+@media (max-width: 640px) {
+  .accounting-card { flex-wrap: wrap; }
+  .accounting-actions { width: 100%; justify-content: flex-end; }
+}
