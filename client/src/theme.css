@@ -1285,3 +1285,45 @@ button:focus-visible, input:focus-visible { outline: 3px solid color-mix(in srgb
   .accounting-card { flex-wrap: wrap; }
   .accounting-actions { width: 100%; justify-content: flex-end; }
 }
+
+/* ---- Data Exports ---- */
+.export-grid { display: grid; gap: 12px; margin-top: 12px; }
+@media (min-width: 700px) { .export-grid { grid-template-columns: 1fr 1fr; } }
+.export-card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 16px; display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+.export-card .customer-copy { flex: 1; min-width: 0; }
+.export-card .customer-copy strong { display: block; font-size: 1.05em; }
+.export-card .customer-copy small { display: block; color: var(--muted); margin-top: 4px; line-height: 1.4; }
+.export-card .primary-button { flex-shrink: 0; }
+
+/* ---- Collapsible sidebar (desktop only) ---- */
+.sidebar-collapse-toggle { display: none; }
+@media (min-width: 900px) {
+  .app-shell.sidebar-is-collapsed .app-layout { grid-template-columns: 64px minmax(0, 1fr); }
+  .sidebar { transition: width .2s ease, padding .2s ease; }
+  .sidebar.collapsed { width: 64px; padding-left: 8px; padding-right: 8px; overflow-x: hidden; }
+  .sidebar.collapsed .sidebar-head > div,
+  .sidebar.collapsed .sidebar-group > p,
+  .sidebar.collapsed .sidebar-group > button > span:not(.nav-badge),
+  .sidebar.collapsed .sidebar-user-info > span,
+  .sidebar.collapsed .sidebar-logout,
+  .sidebar.collapsed .sidebar-collapse-toggle > span { display: none; }
+  .sidebar.collapsed .sidebar-group > button { justify-content: center; padding: 0; }
+  .sidebar.collapsed .sidebar-head { justify-content: center; padding-left: 0; padding-right: 0; }
+  .sidebar.collapsed .sidebar-user { justify-content: center; }
+  .sidebar.collapsed .nav-badge { position: absolute; margin: -18px 0 0 22px; }
+  .sidebar.collapsed .sidebar-group > button { position: relative; }
+  .sidebar.collapsed .sidebar-group > button:hover::after {
+    content: attr(aria-label);
+    position: absolute; left: calc(100% + 10px); top: 50%; transform: translateY(-50%);
+    background: #151714; color: #f7f8f3; border: 1px solid #3b3f36; border-radius: 6px;
+    padding: 6px 10px; font-size: 12px; white-space: nowrap; z-index: 70; pointer-events: none;
+  }
+  .sidebar-collapse-toggle {
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+    width: 100%; margin-top: 14px; padding: 10px; border: 1px solid #3b3f36;
+    border-radius: 6px; background: #151714; color: #d5d8d1;
+    font-size: 12px; font-weight: 700; cursor: pointer;
+  }
+  .sidebar-collapse-toggle:hover { border-color: var(--accent); color: #f7f8f3; }
+  .sidebar.collapsed .sidebar-collapse-toggle { padding: 10px 0; }
+}

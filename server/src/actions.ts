@@ -31,6 +31,13 @@ function cleanImageUrls(urls: string[] | undefined): string[] {
   return out;
 }
 
+/** Escape one CSV cell: quote if it contains a comma, quote, or newline. */
+function csvCell(value: string | null | undefined): string {
+  const v = value ?? "";
+  if (/[",\n\r]/.test(v)) return `"${v.replace(/"/g, '""')}"`;
+  return v;
+}
+
 function resolvedDescription(input: { description?: string; full_description?: string }): string {
   if (input.full_description !== undefined && input.full_description.trim().length > 0) return input.full_description.trim();
   return (input.description ?? "").trim();
@@ -4785,6 +4792,169 @@ ${args.transcript.slice(0, 15000)}`,
         // PDF text extraction failed — still return the blob key so the user can attach manually.
       }
       return { ok: true, extracted, blob_key: blobKey };
+    },
+  }),
+
+  // ── Data Exports (CSV downloads; admin/manager only) ────────────────────
+  // TEST-DATA NOTE: exportOrders EXCLUDES test invoices 1001-1010; exportExpenses
+  // EXCLUDES bills with is_test=1. These never reach a downloaded file.
+
+  exportOrders: defineAction({
+    request: z.object({
+      start_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+      end_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+    }),
+    response: z.object({ ok: z.boolean(), filename: z.string(), csv: z.string() }),
+    async handler(ctx, args) {
+      const db = ctx.db<typeof schema>();
+      const TEST_MIN = 1001, TEST_MAX = 1010;
+      const startMs = args.start_date ? new Date(args.start_date + "T00:00:00").getTime() : 0;
+      const endMs = args.end_date ? new Date(args.end_date + "T23:59:59.999").getTime() : Number.MAX_SAFE_INTEGER;
+      const salesRows = await db.select().from(schema.sales).orderBy(asc(schema.sales.createdAt));
+      const realSales = salesRows.filter((s) => {
+        const inv = s.invoiceNumber ?? 0;
+        if (inv >= TEST_MIN && inv <= TEST_MAX) return false; // test data
+        const t = s.createdAt instanceof Date ? s.createdAt.getTime() : Number(s.createdAt);
+        return t >= startMs && t <= endMs;
+      });
+      const saleIds = realSales.map((s) => s.id);
+      const itemsBySale = new Map<string, typeof schema.saleItems.$inferSelect[]>();
+      if (saleIds.length > 0) {
+        const items = await db.select().from(schema.saleItems).where(inArray(schema.saleItems.saleId, saleIds));
+        for (const it of items) {
+          const arr = itemsBySale.get(it.saleId) ?? [];
+          arr.push(it);
+          itemsBySale.set(it.saleId, arr);
+        }
+      }
+      const rows: string[][] = [[
+        "Invoice #", "Date", "Customer", "Salesperson", "Product", "Qty",
+        "Unit Price", "Line Total", "Invoice Subtotal", "Invoice Tax", "Invoice Total",
+        "Amount Paid", "Balance Due", "Payment Status",
+      ]];
+      const fmtDate = (d: Date | number) => new Date(d).toISOString().slice(0, 10);
+      const money = (c: number) => (c / 100).toFixed(2);
+      for (const s of realSales) {
+        const items = itemsBySale.get(s.id) ?? [];
+        const balance = s.totalCents - s.paidCents;
+        if (items.length === 0) {
+          rows.push([
+            String(s.invoiceNumber ?? ""), fmtDate(s.createdAt), s.customerName, s.salesperson,
+            "", "", "", "", money(s.subtotalCents), money(s.taxCents), money(s.totalCents),
+            money(s.paidCents), money(balance), s.status,
+          ]);
+        } else {
+          for (const it of items) {
+            rows.push([
+              String(s.invoiceNumber ?? ""), fmtDate(s.createdAt), s.customerName, s.salesperson,
+              it.productTitle, String(it.quantity), money(it.unitPriceCents), money(it.lineTotalCents),
+              money(s.subtotalCents), money(s.taxCents), money(s.totalCents),
+              money(s.paidCents), money(balance), s.status,
+            ]);
+          }
+        }
+      }
+      const csv = rows.map((r) => r.map(csvCell).join(",")).join("\n");
+      const stamp = new Date().toISOString().slice(0, 10);
+      return { ok: true, filename: `rima-orders-${stamp}.csv`, csv };
+    },
+  }),
+
+  exportExpenses: defineAction({
+    request: z.object({
+      start_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+      end_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+    }),
+    response: z.object({ ok: z.boolean(), filename: z.string(), csv: z.string() }),
+    async handler(ctx, args) {
+      const db = ctx.db<typeof schema>();
+      const conditions = [eq(schema.bills.isTest, 0)]; // exclude test bills
+      if (args.start_date) conditions.push(gte(schema.bills.billDate, args.start_date));
+      if (args.end_date) conditions.push(lte(schema.bills.billDate, args.end_date));
+      const rows = await db.select().from(schema.bills)
+        .where(and(...conditions)).orderBy(asc(schema.bills.billDate));
+      const header = ["Vendor", "Invoice #", "Bill Date", "Due Date", "Amount", "Category", "Payment Method", "Paid Date", "Status", "Notes"];
+      const money = (c: number) => (c / 100).toFixed(2);
+      const lines = rows.map((b) => [
+        b.vendorName, b.invoiceNumber, b.billDate, b.dueDate ?? "",
+        money(b.amountCents), b.category, b.paymentMethod,
+        b.paidAt ? new Date(b.paidAt).toISOString().slice(0, 10) : "",
+        b.paymentMethod === "unpaid" ? "Unpaid" : "Paid", b.notes,
+      ]);
+      const csv = [header, ...lines].map((r) => r.map(csvCell).join(",")).join("\n");
+      const stamp = new Date().toISOString().slice(0, 10);
+      return { ok: true, filename: `rima-expenses-${stamp}.csv`, csv };
+    },
+  }),
+
+  exportCustomers: defineAction({
+    request: z.object({}),
+    response: z.object({ ok: z.boolean(), filename: z.string(), csv: z.string() }),
+    async handler(ctx) {
+      const db = ctx.db<typeof schema>();
+      const TEST_MIN = 1001, TEST_MAX = 1010;
+      const customers = await db.select().from(schema.customers).orderBy(asc(schema.customers.name));
+      const salesRows = await db.select({
+        customerId: schema.sales.customerId,
+        invoiceNumber: schema.sales.invoiceNumber,
+        totalCents: schema.sales.totalCents,
+        paidCents: schema.sales.paidCents,
+      }).from(schema.sales);
+      const balanceByCustomer = new Map<number, number>();
+      for (const s of salesRows) {
+        const inv = s.invoiceNumber ?? 0;
+        if (inv >= TEST_MIN && inv <= TEST_MAX) continue; // test data
+        if (s.customerId == null) continue;
+        balanceByCustomer.set(s.customerId, (balanceByCustomer.get(s.customerId) ?? 0) + s.totalCents - s.paidCents);
+      }
+      const header = ["Name", "Business", "Phone", "Email", "Street", "City", "State", "ZIP", "Tax ID", "Tax Status", "Balance Due", "Notes"];
+      const money = (c: number) => (c / 100).toFixed(2);
+      const lines = customers.map((c) => [
+        c.name, c.businessName, c.phone, c.email,
+        c.deliveryStreet, c.deliveryCity, c.deliveryState, c.deliveryZip,
+        c.taxId, c.taxStatus, money(balanceByCustomer.get(c.id) ?? 0), c.notes,
+      ]);
+      const csv = [header, ...lines].map((r) => r.map(csvCell).join(",")).join("\n");
+      const stamp = new Date().toISOString().slice(0, 10);
+      return { ok: true, filename: `rima-customers-${stamp}.csv`, csv };
+    },
+  }),
+
+  exportProducts: defineAction({
+    request: z.object({}),
+    response: z.object({ ok: z.boolean(), filename: z.string(), csv: z.string() }),
+    async handler(ctx) {
+      const db = ctx.db<typeof schema>();
+      const products = await db.select().from(schema.products).orderBy(asc(schema.products.title));
+      const header = ["Title", "Part #", "SKU", "Vendor", "Barcode", "Price", "Cost", "MSRP", "On Hand", "Par Level", "Status"];
+      const money = (c: number) => (c / 100).toFixed(2);
+      const lines = products.map((p) => [
+        p.title, p.partNumber, p.sku, p.vendor, p.barcode ?? "",
+        money(p.priceCents), money(p.costCents), money(p.msrpCents),
+        String(p.quantity), String(p.parLevel), p.status,
+      ]);
+      const csv = [header, ...lines].map((r) => r.map(csvCell).join(",")).join("\n");
+      const stamp = new Date().toISOString().slice(0, 10);
+      return { ok: true, filename: `rima-products-${stamp}.csv`, csv };
+    },
+  }),
+
+  backupDatabase: defineAction({
+    request: z.object({}),
+    response: z.object({ ok: z.boolean(), filename: z.string(), data_base64: z.string(), size_bytes: z.number(), error: z.string().optional() }),
+    async handler() {
+      const { readFileSync, statSync } = await import("node:fs");
+      const { join } = await import("node:path");
+      const DATA_DIR = process.env.DATA_DIR ?? join(process.cwd(), "data");
+      const DB_PATH = process.env.DB_PATH ?? join(DATA_DIR, "app.db");
+      try {
+        const stat = statSync(DB_PATH);
+        const buf = readFileSync(DB_PATH);
+        const stamp = new Date().toISOString().slice(0, 10);
+        return { ok: true, filename: `rima-backup-${stamp}.db`, data_base64: buf.toString("base64"), size_bytes: stat.size };
+      } catch (e) {
+        return { ok: false, filename: "", data_base64: "", size_bytes: 0, error: "Could not read database file." };
+      }
     },
   }),
 } satisfies ActionsModule;

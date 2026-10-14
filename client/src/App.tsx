@@ -66,6 +66,8 @@ const ChartIcon = () => <Icon><path d="M4 20V10M10 20V4M16 20v-8M22 20H2" /></Ic
 const TrashIcon = () => <Icon size={16}><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v5M14 11v5" /></Icon>;
 const TruckIcon = () => <Icon><path d="M2 6h12v10H2zM14 10h4l3 3v3h-7z" /><circle cx="6.5" cy="18.5" r="1.6" /><circle cx="17" cy="18.5" r="1.6" /></Icon>;
 const MenuIcon = () => <Icon><path d="M4 7h16M4 12h16M4 17h16" /></Icon>;
+const CollapseIcon = () => <Icon size={18}><path d="m14 6-6 6 6 6" /><path d="M20 5v14" /></Icon>;
+const ExpandIcon = () => <Icon size={18}><path d="m10 6 6 6-6 6" /><path d="M4 5v14" /></Icon>;
 const FileIcon = () => <Icon><path d="M6 2h8l4 4v16H6Z" /><path d="M14 2v4h4M9 12h6M9 16h6" /></Icon>;
 const DepositIcon = () => <Icon><rect x="2" y="6" width="20" height="12" rx="2" /><circle cx="12" cy="12" r="2.6" /><path d="M5.5 9.5h.01M18.5 14.5h.01" /></Icon>;
 const HelpIcon = () => <Icon><circle cx="12" cy="12" r="9" /><path d="M9.5 9a2.5 2.5 0 0 1 5 .2c0 1.7-2.5 2.1-2.5 3.8M12 17h.01" /></Icon>;
@@ -4058,7 +4060,7 @@ function DepositsView({ onOpenCustomer }: { onOpenCustomer: (id: number) => void
   </>;
 }
 
-type AccountingTab = "bills" | "pl" | "unpaid";
+type AccountingTab = "bills" | "pl" | "unpaid" | "exports";
 type PlPreset = "month" | "lastMonth" | "ytd" | "custom";
 
 function plPresetRange(preset: PlPreset): { start: string; end: string } {
@@ -4136,8 +4138,8 @@ function AccountingView() {
     <p className="field-intro">Track every business bill and expense here — upload supplier invoices or enter cash and check payments by hand. The P&amp;L pulls real sales (test invoices excluded) so you get true numbers for the accountant.</p>
 
     <div className="pill-tabs" role="tablist" aria-label="Accounting sections">
-      {(["bills", "pl", "unpaid"] as Array<[AccountingTab, string]>).map(([v, label]) => (
-        <button key={v} type="button" role="tab" aria-selected={tab === v} className={tab === v ? "active" : ""} onClick={() => setTab(v)}>{label === "bills" ? "Bills" : label === "pl" ? "P&L" : "Unpaid"}</button>
+      {([["bills", "Bills"], ["pl", "P&L"], ["unpaid", "Unpaid"], ["exports", "Exports"]] as Array<[AccountingTab, string]>).map(([v, label]) => (
+        <button key={v} type="button" role="tab" aria-selected={tab === v} className={tab === v ? "active" : ""} onClick={() => setTab(v)}>{label}</button>
       ))}
     </div>
 
@@ -4192,11 +4194,104 @@ function AccountingView() {
         </>}
     </>}
 
+    {tab === "exports" && <ExportsTab />}
+
     {billFormOpen ? <BillForm
       categories={categories.map((c) => c.name)}
       initial={editingBill}
       onClose={() => { setBillFormOpen(false); setEditingBill(null); }}
     /> : null}
+  </>;
+}
+
+function ExportsTab() {
+  const [startDate, setStartDate] = useState("");
+  const [endDate, setEndDate] = useState("");
+  const [downloading, setDownloading] = useState<string | null>(null);
+  const [error, setError] = useState("");
+
+  const doDownload = async (kind: "orders" | "expenses" | "customers" | "products") => {
+    setDownloading(kind); setError("");
+    try {
+      const dateArgs = (kind === "orders" || kind === "expenses")
+        ? { ...(startDate ? { start_date: startDate } : {}), ...(endDate ? { end_date: endDate } : {}) }
+        : {};
+      const result = kind === "orders" ? await api.exportOrders(dateArgs)
+        : kind === "expenses" ? await api.exportExpenses(dateArgs)
+        : kind === "customers" ? await api.exportCustomers({})
+        : await api.exportProducts({});
+      if (!result.ok) { setError("Export failed. Try again."); return; }
+      const blob = new Blob([result.csv], { type: "text/csv;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = result.filename;
+      document.body.appendChild(a); a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch {
+      setError("Export failed. Check your connection and try again.");
+    } finally {
+      setDownloading(null);
+    }
+  };
+
+  const doBackup = async () => {
+    setDownloading("backup"); setError("");
+    try {
+      const result = await api.backupDatabase({});
+      if (!result.ok) { setError(result.error ?? "Backup failed. Try again."); return; }
+      const bytes = Uint8Array.from(atob(result.data_base64), (c) => c.charCodeAt(0));
+      const blob = new Blob([bytes], { type: "application/x-sqlite3" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = result.filename;
+      document.body.appendChild(a); a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch {
+      setError("Backup failed. Check your connection and try again.");
+    } finally {
+      setDownloading(null);
+    }
+  };
+
+  const cards: Array<{ kind: "orders" | "expenses" | "customers" | "products"; title: string; desc: string; dated: boolean }> = [
+    { kind: "orders", title: "Orders", desc: "Every invoice with line items — customer, products, quantities, totals, payment status. One row per line item.", dated: true },
+    { kind: "expenses", title: "Expenses", desc: "All bills and expenses — vendor, date, amount, category, paid status.", dated: true },
+    { kind: "customers", title: "Customers", desc: "Full customer list — name, business, contact info, address, balance due.", dated: false },
+    { kind: "products", title: "Product Catalog", desc: "Every product — title, part #, SKU, vendor, price, cost, stock, barcode.", dated: false },
+  ];
+
+  return <>
+    <p className="field-intro">Download your business data as CSV files — open them in Excel or Google Sheets, or hand them to your accountant.</p>
+    <div className="export-card export-backup">
+      <span className="customer-copy"><strong>Backup Everything</strong><small>Download a complete copy of your entire database — every product, customer, order, bill, and setting. Keep it somewhere safe.</small></span>
+      <button type="button" className="primary-button" disabled={downloading !== null} onClick={() => void doBackup()}>
+        {downloading === "backup" ? "Preparing…" : "Download Backup"}
+      </button>
+    </div>
+    {(cards.some((c) => c.dated)) ? (
+      <section className="analytics-filters" aria-label="Export date range">
+        <div className="date-inputs">
+          <label><span>From</span><input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} /></label>
+          <label><span>To</span><input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} /></label>
+          {(startDate || endDate) ? <button type="button" className="secondary-button" onClick={() => { setStartDate(""); setEndDate(""); }}>Clear</button> : null}
+        </div>
+        <p className="field-note">Date range applies to Orders and Expenses. Customers and Products always export everything.</p>
+      </section>
+    ) : null}
+    {error ? <p className="field-error">{error}</p> : null}
+    <div className="export-grid">
+      {cards.map((c) => (
+        <div key={c.kind} className="export-card">
+          <span className="customer-copy"><strong>{c.title}</strong><small>{c.desc}</small></span>
+          <button type="button" className="primary-button" disabled={downloading !== null} onClick={() => void doDownload(c.kind)}>
+            {downloading === c.kind ? "Preparing…" : "Download CSV"}
+          </button>
+        </div>
+      ))}
+    </div>
+    <p className="field-note">Test invoices (1001–1010) and test bills are excluded from exports.</p>
   </>;
 }
 
@@ -4832,6 +4927,16 @@ export function App() {
   const [view, setView] = useState<View>("checkout");
   const [accountId, setAccountId] = useState<number | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    try { return localStorage.getItem("rima-sidebar-collapsed") === "1"; } catch { return false; }
+  });
+  const toggleSidebar = () => {
+    setSidebarCollapsed((c) => {
+      const next = !c;
+      try { localStorage.setItem("rima-sidebar-collapsed", next ? "1" : "0"); } catch { /* ignore */ }
+      return next;
+    });
+  };
   const fieldOrders = useQuery({ queryKey: ["field-orders"], queryFn: () => api.listFieldOrders({ status: "all", limit: 50 }) });
   const fieldDraftCount = fieldOrders.data?.draft_count ?? 0;
   const purchaseOrders = useQuery({ queryKey: ["purchase-orders"], queryFn: () => api.listPurchaseOrders({ limit: 50 }) });
@@ -4841,8 +4946,8 @@ export function App() {
   const purchaseBadge = poDraftCount + receivingReviewCount;
   const viewLabels: Record<View, string> = { checkout: "Checkout", field: "Field Orders", tasks: "Tasks", products: "Products", customers: "Customers", inventory: "Inventory", orders: "Purchase", analytics: "Analytics", settings: "Settings", markup: "Markup Rules", team: "Sales Team", returns: "Returns", salesorders: "Orders", statements: "Statements", deposits: "Deposits", users: "Users", help: "Help & Training" };
   const go = (next: View) => { setView(next); setMenuOpen(false); };
-  const navItem = (next: View, label: string, icon: ReactNode, badge = 0) => <button type="button" className={view === next ? "active" : ""} onClick={() => go(next)} aria-current={view === next ? "page" : undefined}>{icon}<span>{label}</span>{badge > 0 ? <span className="nav-badge">{badge}</span> : null}</button>;
-  return <div className="app-shell">
+  const navItem = (next: View, label: string, icon: ReactNode, badge = 0) => <button type="button" className={view === next ? "active" : ""} onClick={() => go(next)} aria-current={view === next ? "page" : undefined} aria-label={label} title={label}>{icon}<span>{label}</span>{badge > 0 ? <span className="nav-badge">{badge}</span> : null}</button>;
+  return <div className={`app-shell${sidebarCollapsed ? " sidebar-is-collapsed" : ""}`}>
     <header className="brand-header"><img src={rimaLogo} alt="RIMA Supply Company" /></header>
     <div className="mobile-menu-bar">
       <button type="button" onClick={() => setMenuOpen(true)} aria-label="Open navigation menu"><MenuIcon /><span>Menu</span></button>
@@ -4851,7 +4956,7 @@ export function App() {
     </div>
     <div className="app-layout">
       {menuOpen ? <button type="button" className="sidebar-backdrop" aria-label="Close navigation menu" onClick={() => setMenuOpen(false)} /> : null}
-      <aside className={`sidebar ${menuOpen ? "open" : ""}`} aria-label="Sidebar">
+      <aside className={`sidebar ${menuOpen ? "open" : ""} ${sidebarCollapsed ? "collapsed" : ""}`} aria-label="Sidebar">
         <div className="sidebar-head"><div><span>WORKSPACE</span><strong>Store operations</strong></div><button type="button" className="sidebar-close" onClick={() => setMenuOpen(false)} aria-label="Close navigation menu"><CloseIcon /></button></div>
         <nav className="sidebar-nav" aria-label="Main sections">
           <div className="sidebar-group"><p>Counter & field</p>{navItem("checkout", "Checkout", <CartIcon />)}{navItem("salesorders", "Orders", <FileIcon />)}{navItem("field", "Field Orders", <ClipboardIcon />, fieldDraftCount)}{navItem("tasks", "Tasks", <TasksIcon />)}{navItem("customers", "Customers", <UserIcon />)}{navItem("statements", "Statements", <MailIcon />)}</div>
@@ -4863,6 +4968,9 @@ export function App() {
           <div className="sidebar-user-info"><UserIcon /><span><strong>{user?.displayName || user?.username || "Signed in"}</strong><small>{user?.role ? user.role.charAt(0).toUpperCase() + user.role.slice(1) : ""}</small></span></div>
           <button type="button" className="sidebar-logout" onClick={() => void logout()}>Sign out</button>
         </div>
+        <button type="button" className="sidebar-collapse-toggle" onClick={toggleSidebar} aria-label={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"} aria-expanded={!sidebarCollapsed} title={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}>
+          {sidebarCollapsed ? <ExpandIcon /> : <CollapseIcon />}<span>{sidebarCollapsed ? "Expand" : "Collapse"}</span>
+        </button>
       </aside>
       <main className="app-main">{view === "checkout" ? <CheckoutView onOpenCustomer={setAccountId} /> : view === "salesorders" ? <OrdersView onOpenCustomer={setAccountId} onOpenField={() => setView("field")} /> : view === "statements" ? <StatementsView onOpenCustomer={setAccountId} /> : view === "deposits" ? <DepositsView onOpenCustomer={setAccountId} /> : view === "field" ? <FieldOrdersView /> : view === "products" ? <ProductManagementView /> : view === "customers" ? <CustomersView /> : view === "inventory" ? <InventoryView /> : view === "orders" ? <PurchaseOrdersView /> : view === "analytics" ? <AnalyticsView /> : view === "markup" ? <MarkupRulesView /> : view === "team" ? <SalesTeamView /> : view === "returns" ? <ReturnsSummaryView /> : view === "users" ? <UserManagementView /> : view === "help" ? <HelpView /> : view === "tasks" ? <TasksView /> : view === "accounting" ? <AccountingView /> : <SettingsView />}</main>
     </div>

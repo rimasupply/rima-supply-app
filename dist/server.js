@@ -48005,6 +48005,12 @@ function cleanImageUrls(urls) {
   }
   return out;
 }
+function csvCell(value) {
+  const v = value ?? "";
+  if (/[",\n\r]/.test(v))
+    return `"${v.replace(/"/g, '""')}"`;
+  return v;
+}
 function resolvedDescription(input) {
   if (input.full_description !== undefined && input.full_description.trim().length > 0)
     return input.full_description.trim();
@@ -52676,6 +52682,223 @@ ${textResult.text.slice(0, 60000)}`, {
         }
       } catch {}
       return { ok: true, extracted, blob_key: blobKey };
+    }
+  }),
+  exportOrders: defineAction({
+    request: object({
+      start_date: string2().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+      end_date: string2().regex(/^\d{4}-\d{2}-\d{2}$/).optional()
+    }),
+    response: object({ ok: boolean2(), filename: string2(), csv: string2() }),
+    async handler(ctx, args) {
+      const db = ctx.db();
+      const TEST_MIN = 1001, TEST_MAX = 1010;
+      const startMs = args.start_date ? new Date(args.start_date + "T00:00:00").getTime() : 0;
+      const endMs = args.end_date ? new Date(args.end_date + "T23:59:59.999").getTime() : Number.MAX_SAFE_INTEGER;
+      const salesRows = await db.select().from(sales).orderBy(asc(sales.createdAt));
+      const realSales = salesRows.filter((s) => {
+        const inv = s.invoiceNumber ?? 0;
+        if (inv >= TEST_MIN && inv <= TEST_MAX)
+          return false;
+        const t = s.createdAt instanceof Date ? s.createdAt.getTime() : Number(s.createdAt);
+        return t >= startMs && t <= endMs;
+      });
+      const saleIds = realSales.map((s) => s.id);
+      const itemsBySale = new Map;
+      if (saleIds.length > 0) {
+        const items = await db.select().from(saleItems).where(inArray(saleItems.saleId, saleIds));
+        for (const it of items) {
+          const arr = itemsBySale.get(it.saleId) ?? [];
+          arr.push(it);
+          itemsBySale.set(it.saleId, arr);
+        }
+      }
+      const rows = [[
+        "Invoice #",
+        "Date",
+        "Customer",
+        "Salesperson",
+        "Product",
+        "Qty",
+        "Unit Price",
+        "Line Total",
+        "Invoice Subtotal",
+        "Invoice Tax",
+        "Invoice Total",
+        "Amount Paid",
+        "Balance Due",
+        "Payment Status"
+      ]];
+      const fmtDate = (d) => new Date(d).toISOString().slice(0, 10);
+      const money = (c) => (c / 100).toFixed(2);
+      for (const s of realSales) {
+        const items = itemsBySale.get(s.id) ?? [];
+        const balance = s.totalCents - s.paidCents;
+        if (items.length === 0) {
+          rows.push([
+            String(s.invoiceNumber ?? ""),
+            fmtDate(s.createdAt),
+            s.customerName,
+            s.salesperson,
+            "",
+            "",
+            "",
+            "",
+            money(s.subtotalCents),
+            money(s.taxCents),
+            money(s.totalCents),
+            money(s.paidCents),
+            money(balance),
+            s.status
+          ]);
+        } else {
+          for (const it of items) {
+            rows.push([
+              String(s.invoiceNumber ?? ""),
+              fmtDate(s.createdAt),
+              s.customerName,
+              s.salesperson,
+              it.productTitle,
+              String(it.quantity),
+              money(it.unitPriceCents),
+              money(it.lineTotalCents),
+              money(s.subtotalCents),
+              money(s.taxCents),
+              money(s.totalCents),
+              money(s.paidCents),
+              money(balance),
+              s.status
+            ]);
+          }
+        }
+      }
+      const csv = rows.map((r) => r.map(csvCell).join(",")).join(`
+`);
+      const stamp = new Date().toISOString().slice(0, 10);
+      return { ok: true, filename: `rima-orders-${stamp}.csv`, csv };
+    }
+  }),
+  exportExpenses: defineAction({
+    request: object({
+      start_date: string2().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+      end_date: string2().regex(/^\d{4}-\d{2}-\d{2}$/).optional()
+    }),
+    response: object({ ok: boolean2(), filename: string2(), csv: string2() }),
+    async handler(ctx, args) {
+      const db = ctx.db();
+      const conditions = [eq(bills.isTest, 0)];
+      if (args.start_date)
+        conditions.push(gte(bills.billDate, args.start_date));
+      if (args.end_date)
+        conditions.push(lte(bills.billDate, args.end_date));
+      const rows = await db.select().from(bills).where(and(...conditions)).orderBy(asc(bills.billDate));
+      const header = ["Vendor", "Invoice #", "Bill Date", "Due Date", "Amount", "Category", "Payment Method", "Paid Date", "Status", "Notes"];
+      const money = (c) => (c / 100).toFixed(2);
+      const lines = rows.map((b) => [
+        b.vendorName,
+        b.invoiceNumber,
+        b.billDate,
+        b.dueDate ?? "",
+        money(b.amountCents),
+        b.category,
+        b.paymentMethod,
+        b.paidAt ? new Date(b.paidAt).toISOString().slice(0, 10) : "",
+        b.paymentMethod === "unpaid" ? "Unpaid" : "Paid",
+        b.notes
+      ]);
+      const csv = [header, ...lines].map((r) => r.map(csvCell).join(",")).join(`
+`);
+      const stamp = new Date().toISOString().slice(0, 10);
+      return { ok: true, filename: `rima-expenses-${stamp}.csv`, csv };
+    }
+  }),
+  exportCustomers: defineAction({
+    request: object({}),
+    response: object({ ok: boolean2(), filename: string2(), csv: string2() }),
+    async handler(ctx) {
+      const db = ctx.db();
+      const TEST_MIN = 1001, TEST_MAX = 1010;
+      const customers2 = await db.select().from(customers).orderBy(asc(customers.name));
+      const salesRows = await db.select({
+        customerId: sales.customerId,
+        invoiceNumber: sales.invoiceNumber,
+        totalCents: sales.totalCents,
+        paidCents: sales.paidCents
+      }).from(sales);
+      const balanceByCustomer = new Map;
+      for (const s of salesRows) {
+        const inv = s.invoiceNumber ?? 0;
+        if (inv >= TEST_MIN && inv <= TEST_MAX)
+          continue;
+        if (s.customerId == null)
+          continue;
+        balanceByCustomer.set(s.customerId, (balanceByCustomer.get(s.customerId) ?? 0) + s.totalCents - s.paidCents);
+      }
+      const header = ["Name", "Business", "Phone", "Email", "Street", "City", "State", "ZIP", "Tax ID", "Tax Status", "Balance Due", "Notes"];
+      const money = (c) => (c / 100).toFixed(2);
+      const lines = customers2.map((c) => [
+        c.name,
+        c.businessName,
+        c.phone,
+        c.email,
+        c.deliveryStreet,
+        c.deliveryCity,
+        c.deliveryState,
+        c.deliveryZip,
+        c.taxId,
+        c.taxStatus,
+        money(balanceByCustomer.get(c.id) ?? 0),
+        c.notes
+      ]);
+      const csv = [header, ...lines].map((r) => r.map(csvCell).join(",")).join(`
+`);
+      const stamp = new Date().toISOString().slice(0, 10);
+      return { ok: true, filename: `rima-customers-${stamp}.csv`, csv };
+    }
+  }),
+  exportProducts: defineAction({
+    request: object({}),
+    response: object({ ok: boolean2(), filename: string2(), csv: string2() }),
+    async handler(ctx) {
+      const db = ctx.db();
+      const products2 = await db.select().from(products).orderBy(asc(products.title));
+      const header = ["Title", "Part #", "SKU", "Vendor", "Barcode", "Price", "Cost", "MSRP", "On Hand", "Par Level", "Status"];
+      const money = (c) => (c / 100).toFixed(2);
+      const lines = products2.map((p) => [
+        p.title,
+        p.partNumber,
+        p.sku,
+        p.vendor,
+        p.barcode ?? "",
+        money(p.priceCents),
+        money(p.costCents),
+        money(p.msrpCents),
+        String(p.quantity),
+        String(p.parLevel),
+        p.status
+      ]);
+      const csv = [header, ...lines].map((r) => r.map(csvCell).join(",")).join(`
+`);
+      const stamp = new Date().toISOString().slice(0, 10);
+      return { ok: true, filename: `rima-products-${stamp}.csv`, csv };
+    }
+  }),
+  backupDatabase: defineAction({
+    request: object({}),
+    response: object({ ok: boolean2(), filename: string2(), data_base64: string2(), size_bytes: number2(), error: string2().optional() }),
+    async handler() {
+      const { readFileSync, statSync } = await import("fs");
+      const { join } = await import("path");
+      const DATA_DIR = process.env.DATA_DIR ?? join(process.cwd(), "data");
+      const DB_PATH = process.env.DB_PATH ?? join(DATA_DIR, "app.db");
+      try {
+        const stat = statSync(DB_PATH);
+        const buf = readFileSync(DB_PATH);
+        const stamp = new Date().toISOString().slice(0, 10);
+        return { ok: true, filename: `rima-backup-${stamp}.db`, data_base64: buf.toString("base64"), size_bytes: stat.size };
+      } catch (e) {
+        return { ok: false, filename: "", data_base64: "", size_bytes: 0, error: "Could not read database file." };
+      }
     }
   })
 };
