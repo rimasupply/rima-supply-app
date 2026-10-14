@@ -389,3 +389,28 @@ export const users = sqliteTable(
   },
   (table) => [uniqueIndex("users_username_unique").on(table.username)],
 );
+
+export const tasks = sqliteTable(
+  "tasks",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    title: text("title").notNull(),
+    description: text("description").notNull().default(""),
+    assignedTo: text("assigned_to").notNull(),
+    dueDate: text("due_date"),
+    repeatPattern: text("repeat_pattern", { enum: ["none", "daily", "weekly"] }).notNull().default("none"),
+    isCompleted: integer("is_completed").notNull().default(0),
+    completedAt: integer("completed_at", { mode: "timestamp_ms" }),
+    customerId: integer("customer_id").references(() => customers.id, { onDelete: "set null" }),
+    priority: text("priority", { enum: ["low", "normal", "high"] }).notNull().default("normal"),
+    taskType: text("task_type", { enum: ["task", "sales_call", "visit"] }).notNull().default("task"),
+    createdBy: text("created_by").notNull().default(""),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().$defaultFn(() => new Date()),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull().$defaultFn(() => new Date()),
+  },
+  (table) => [
+    index("tasks_assigned_index").on(table.assignedTo),
+    index("tasks_due_index").on(table.dueDate),
+    index("tasks_customer_index").on(table.customerId),
+  ],
+);

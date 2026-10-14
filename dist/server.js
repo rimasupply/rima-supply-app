@@ -29093,6 +29093,7 @@ __export(exports_schema, {
   saleItems: () => saleItems,
   sales: () => sales,
   salesTeam: () => salesTeam,
+  tasks: () => tasks,
   users: () => users,
   wishlistItems: () => wishlistItems
 });
@@ -29388,6 +29389,26 @@ var users = sqliteTable("users", {
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().$defaultFn(() => new Date),
   updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull().$defaultFn(() => new Date)
 }, (table) => [uniqueIndex("users_username_unique").on(table.username)]);
+var tasks = sqliteTable("tasks", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  title: text("title").notNull(),
+  description: text("description").notNull().default(""),
+  assignedTo: text("assigned_to").notNull(),
+  dueDate: text("due_date"),
+  repeatPattern: text("repeat_pattern", { enum: ["none", "daily", "weekly"] }).notNull().default("none"),
+  isCompleted: integer("is_completed").notNull().default(0),
+  completedAt: integer("completed_at", { mode: "timestamp_ms" }),
+  customerId: integer("customer_id").references(() => customers.id, { onDelete: "set null" }),
+  priority: text("priority", { enum: ["low", "normal", "high"] }).notNull().default("normal"),
+  taskType: text("task_type", { enum: ["task", "sales_call", "visit"] }).notNull().default("task"),
+  createdBy: text("created_by").notNull().default(""),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().$defaultFn(() => new Date),
+  updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull().$defaultFn(() => new Date)
+}, (table) => [
+  index("tasks_assigned_index").on(table.assignedTo),
+  index("tasks_due_index").on(table.dueDate),
+  index("tasks_customer_index").on(table.customerId)
+]);
 
 // node_modules/zod/v4/core/core.js
 var _a;
@@ -48177,6 +48198,58 @@ var wishlistResponse = object({
   error: string2().optional(),
   item: wishlistItemSchema.nullable()
 });
+var taskSchema = object({
+  id: number2(),
+  title: string2(),
+  description: string2(),
+  assigned_to: string2(),
+  due_date: string2().nullable(),
+  repeat_pattern: _enum(["none", "daily", "weekly"]),
+  is_completed: number2(),
+  completed_at: string2().nullable(),
+  customer_id: number2().nullable(),
+  customer_name: string2().nullable(),
+  priority: _enum(["low", "normal", "high"]),
+  task_type: _enum(["task", "sales_call", "visit"]),
+  created_by: string2(),
+  created_at: string2(),
+  updated_at: string2()
+});
+var dailyTaskSchema = taskSchema.extend({
+  is_auto: boolean2(),
+  auto_label: string2().nullable()
+});
+var taskResponse = object({
+  ok: boolean2(),
+  error: string2().optional(),
+  task: taskSchema.nullable()
+});
+async function presentTask(ctx, row) {
+  const db = ctx.db();
+  let customerName = null;
+  if (row.customerId !== null) {
+    const [c] = await db.select({ name: customers.name, businessName: customers.businessName }).from(customers).where(eq(customers.id, row.customerId)).limit(1);
+    if (c)
+      customerName = c.businessName || c.name;
+  }
+  return {
+    id: row.id,
+    title: row.title,
+    description: row.description,
+    assigned_to: row.assignedTo,
+    due_date: row.dueDate,
+    repeat_pattern: row.repeatPattern,
+    is_completed: row.isCompleted,
+    completed_at: row.completedAt ? row.completedAt.toISOString() : null,
+    customer_id: row.customerId,
+    customer_name: customerName,
+    priority: row.priority,
+    task_type: row.taskType,
+    created_by: row.createdBy,
+    created_at: row.createdAt.toISOString(),
+    updated_at: row.updatedAt.toISOString()
+  };
+}
 function stateTaxRateBps(state) {
   const normalized = state.trim().toUpperCase().replaceAll(".", "");
   if (normalized === "RI" || normalized === "RHODE ISLAND")
@@ -51960,6 +52033,255 @@ ${args.transcript.slice(0, 15000)}`, { schema: voiceNoteSchema, timeout_secs: 60
         return { ok: false, error: "AI summaries need an API key \u2014 ask Randy." };
       }
     }
+  }),
+  listTasks: defineAction({
+    request: object({
+      assigned_to: string2().trim().max(100).optional(),
+      due_date: string2().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+      include_completed: boolean2().default(false)
+    }),
+    response: object({ tasks: array(taskSchema) }),
+    async handler(ctx, args) {
+      const db = ctx.db();
+      const conditions = [];
+      if (args.assigned_to)
+        conditions.push(eq(tasks.assignedTo, args.assigned_to));
+      if (args.due_date)
+        conditions.push(eq(tasks.dueDate, args.due_date));
+      if (!args.include_completed)
+        conditions.push(eq(tasks.isCompleted, 0));
+      const rows = await db.select().from(tasks).where(conditions.length ? and(...conditions) : undefined).orderBy(asc(tasks.dueDate), desc(tasks.priority), asc(tasks.createdAt));
+      return { tasks: await Promise.all(rows.map((r) => presentTask(ctx, r))) };
+    }
+  }),
+  createTask: defineAction({
+    request: object({
+      title: string2().trim().min(1).max(300),
+      description: string2().trim().max(2000).default(""),
+      assigned_to: string2().trim().min(1).max(100),
+      due_date: string2().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().default(null),
+      repeat_pattern: _enum(["none", "daily", "weekly"]).default("none"),
+      customer_id: number2().int().positive().nullable().default(null),
+      priority: _enum(["low", "normal", "high"]).default("normal"),
+      task_type: _enum(["task", "sales_call", "visit"]).default("task")
+    }),
+    response: taskResponse,
+    async handler(ctx, args) {
+      const db = ctx.db();
+      if (args.customer_id !== null) {
+        const [customer] = await db.select({ id: customers.id }).from(customers).where(eq(customers.id, args.customer_id)).limit(1);
+        if (!customer)
+          return { ok: false, error: "Customer not found.", task: null };
+      }
+      const [row] = await db.insert(tasks).values({
+        title: args.title.trim(),
+        description: args.description.trim(),
+        assignedTo: args.assigned_to.trim(),
+        dueDate: args.due_date,
+        repeatPattern: args.repeat_pattern,
+        customerId: args.customer_id,
+        priority: args.priority,
+        taskType: args.task_type,
+        createdBy: ctx.user?.displayName ?? ctx.user?.username ?? "",
+        isCompleted: 0,
+        completedAt: null,
+        createdAt: new Date,
+        updatedAt: new Date
+      }).returning();
+      if (!row)
+        return { ok: false, error: "Could not save that task.", task: null };
+      ctx.invalidateQueries();
+      return { ok: true, task: await presentTask(ctx, row) };
+    }
+  }),
+  updateTask: defineAction({
+    request: object({
+      id: number2().int().positive(),
+      title: string2().trim().min(1).max(300).optional(),
+      description: string2().trim().max(2000).optional(),
+      assigned_to: string2().trim().min(1).max(100).optional(),
+      due_date: string2().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
+      repeat_pattern: _enum(["none", "daily", "weekly"]).optional(),
+      customer_id: number2().int().positive().nullable().optional(),
+      priority: _enum(["low", "normal", "high"]).optional(),
+      task_type: _enum(["task", "sales_call", "visit"]).optional()
+    }),
+    response: taskResponse,
+    async handler(ctx, args) {
+      const db = ctx.db();
+      const patch = { updatedAt: new Date };
+      if (args.title !== undefined)
+        patch.title = args.title.trim();
+      if (args.description !== undefined)
+        patch.description = args.description.trim();
+      if (args.assigned_to !== undefined)
+        patch.assignedTo = args.assigned_to.trim();
+      if (args.due_date !== undefined)
+        patch.dueDate = args.due_date;
+      if (args.repeat_pattern !== undefined)
+        patch.repeatPattern = args.repeat_pattern;
+      if (args.priority !== undefined)
+        patch.priority = args.priority;
+      if (args.task_type !== undefined)
+        patch.taskType = args.task_type;
+      if (args.customer_id !== undefined) {
+        if (args.customer_id !== null) {
+          const [customer] = await db.select({ id: customers.id }).from(customers).where(eq(customers.id, args.customer_id)).limit(1);
+          if (!customer)
+            return { ok: false, error: "Customer not found.", task: null };
+        }
+        patch.customerId = args.customer_id;
+      }
+      const [row] = await db.update(tasks).set(patch).where(eq(tasks.id, args.id)).returning();
+      if (!row)
+        return { ok: false, error: "Task not found.", task: null };
+      ctx.invalidateQueries();
+      return { ok: true, task: await presentTask(ctx, row) };
+    }
+  }),
+  completeTask: defineAction({
+    request: object({ id: number2().int().positive() }),
+    response: object({ ok: boolean2(), error: string2().optional() }),
+    async handler(ctx, args) {
+      const db = ctx.db();
+      const [row] = await db.update(tasks).set({ isCompleted: 1, completedAt: new Date, updatedAt: new Date }).where(eq(tasks.id, args.id)).returning({ id: tasks.id });
+      if (!row)
+        return { ok: false, error: "Task not found." };
+      ctx.invalidateQueries();
+      return { ok: true };
+    }
+  }),
+  reopenTask: defineAction({
+    request: object({ id: number2().int().positive() }),
+    response: object({ ok: boolean2(), error: string2().optional() }),
+    async handler(ctx, args) {
+      const db = ctx.db();
+      const [row] = await db.update(tasks).set({ isCompleted: 0, completedAt: null, updatedAt: new Date }).where(eq(tasks.id, args.id)).returning({ id: tasks.id });
+      if (!row)
+        return { ok: false, error: "Task not found." };
+      ctx.invalidateQueries();
+      return { ok: true };
+    }
+  }),
+  deleteTask: defineAction({
+    request: object({ id: number2().int().positive() }),
+    response: object({ ok: boolean2(), error: string2().optional() }),
+    async handler(ctx, args) {
+      const db = ctx.db();
+      const [row] = await db.delete(tasks).where(eq(tasks.id, args.id)).returning({ id: tasks.id });
+      if (!row)
+        return { ok: false, error: "Task not found." };
+      ctx.invalidateQueries();
+      return { ok: true };
+    }
+  }),
+  getDailyTasks: defineAction({
+    request: object({
+      date: string2().regex(/^\d{4}-\d{2}-\d{2}$/),
+      assigned_to: string2().trim().max(100).optional()
+    }),
+    response: object({ tasks: array(dailyTaskSchema) }),
+    async handler(ctx, args) {
+      const db = ctx.db();
+      const target = args.date;
+      const targetDow = new Date(target + "T12:00:00Z").getUTCDay();
+      const storedConds = [eq(tasks.dueDate, target), eq(tasks.isCompleted, 0)];
+      if (args.assigned_to)
+        storedConds.push(eq(tasks.assignedTo, args.assigned_to));
+      const stored = await db.select().from(tasks).where(and(...storedConds)).orderBy(desc(tasks.priority), asc(tasks.createdAt));
+      const repeatConds = [eq(tasks.isCompleted, 0), or(eq(tasks.repeatPattern, "daily"), eq(tasks.repeatPattern, "weekly"))];
+      if (args.assigned_to)
+        repeatConds.push(eq(tasks.assignedTo, args.assigned_to));
+      const repeaters = await db.select().from(tasks).where(and(...repeatConds));
+      const virtual = [];
+      for (const r of repeaters) {
+        if (r.dueDate === target)
+          continue;
+        if (r.repeatPattern === "daily") {
+          virtual.push({ row: r, label: "Repeats daily" });
+        } else if (r.repeatPattern === "weekly") {
+          const anchorDow = r.dueDate ? new Date(r.dueDate + "T12:00:00Z").getUTCDay() : null;
+          if (anchorDow === null || anchorDow === targetDow)
+            virtual.push({ row: r, label: "Repeats weekly" });
+        }
+      }
+      const out = [];
+      for (const r of stored)
+        out.push({ ...await presentTask(ctx, r), is_auto: false, auto_label: null });
+      for (const v of virtual)
+        out.push({ ...await presentTask(ctx, v.row), is_auto: true, auto_label: v.label });
+      const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+      const staleWishes = await db.select({
+        id: wishlistItems.id,
+        title: wishlistItems.title,
+        createdAt: wishlistItems.createdAt,
+        customerId: customers.id,
+        customerName: customers.name,
+        businessName: customers.businessName
+      }).from(wishlistItems).innerJoin(customers, eq(wishlistItems.customerId, customers.id)).where(and(eq(wishlistItems.status, "open"), lt(wishlistItems.createdAt, sevenDaysAgo))).limit(50);
+      for (const w of staleWishes) {
+        const custLabel = w.businessName || w.customerName;
+        out.push({
+          id: -w.id,
+          title: `Follow up: ${custLabel} wished for ${w.title}`,
+          description: `Wishlist item from ${w.createdAt.toISOString().slice(0, 10)} \u2014 check stock or order it.`,
+          assigned_to: args.assigned_to ?? "",
+          due_date: target,
+          repeat_pattern: "none",
+          is_completed: 0,
+          completed_at: null,
+          customer_id: w.customerId,
+          customer_name: custLabel,
+          priority: "normal",
+          task_type: "task",
+          created_by: "",
+          created_at: w.createdAt.toISOString(),
+          updated_at: w.createdAt.toISOString(),
+          is_auto: true,
+          auto_label: "Wishlist follow-up"
+        });
+      }
+      const backorders = await db.select({
+        productId: receivingLines.productId,
+        rawDescription: receivingLines.rawDescription,
+        backorderQty: receivingLines.backorderQty
+      }).from(receivingLines).where(gt(receivingLines.backorderQty, 0)).limit(50);
+      const seenProducts = new Set;
+      for (const b of backorders) {
+        let label = b.rawDescription || "Unknown product";
+        if (b.productId !== null && !seenProducts.has(b.productId)) {
+          seenProducts.add(b.productId);
+          const [p] = await db.select({ title: products.title }).from(products).where(eq(products.id, b.productId)).limit(1);
+          if (p)
+            label = p.title;
+        } else if (b.productId !== null) {
+          continue;
+        }
+        out.push({
+          id: -(1e5 + (b.productId ?? 0)),
+          title: `Follow up on backorder: ${label} (${b.backorderQty} units)`,
+          description: "Backordered from supplier \u2014 check status or notify waiting customers.",
+          assigned_to: args.assigned_to ?? "",
+          due_date: target,
+          repeat_pattern: "none",
+          is_completed: 0,
+          completed_at: null,
+          customer_id: null,
+          customer_name: null,
+          priority: "high",
+          task_type: "task",
+          created_by: "",
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          is_auto: true,
+          auto_label: "Backorder follow-up"
+        });
+      }
+      const prioRank = { high: 0, normal: 1, low: 2 };
+      const typeRank = { visit: 0, sales_call: 1, task: 2 };
+      out.sort((a, b) => prioRank[a.priority] - prioRank[b.priority] || typeRank[a.task_type] - typeRank[b.task_type] || a.title.localeCompare(b.title));
+      return { tasks: out };
+    }
   })
 };
 
@@ -51990,6 +52312,13 @@ var STAFF_ALLOWED_ACTIONS = new Set([
   "updateWishlistItem",
   "setWishlistStatus",
   "deleteWishlistItem",
+  "listTasks",
+  "createTask",
+  "updateTask",
+  "completeTask",
+  "reopenTask",
+  "deleteTask",
+  "getDailyTasks",
   "getMonthlyStatement",
   "getDepositReport",
   "listSalesOrders"

@@ -260,6 +260,66 @@ const wishlistResponse = z.object({
   item: wishlistItemSchema.nullable(),
 });
 
+// ── Tasks / Daily Ops ──────────────────────────────────────────────────
+
+type TaskRow = typeof schema.tasks.$inferSelect;
+
+const taskSchema = z.object({
+  id: z.number(),
+  title: z.string(),
+  description: z.string(),
+  assigned_to: z.string(),
+  due_date: z.string().nullable(),
+  repeat_pattern: z.enum(["none", "daily", "weekly"]),
+  is_completed: z.number(),
+  completed_at: z.string().nullable(),
+  customer_id: z.number().nullable(),
+  customer_name: z.string().nullable(),
+  priority: z.enum(["low", "normal", "high"]),
+  task_type: z.enum(["task", "sales_call", "visit"]),
+  created_by: z.string(),
+  created_at: z.string(),
+  updated_at: z.string(),
+});
+
+const dailyTaskSchema = taskSchema.extend({
+  is_auto: z.boolean(),
+  auto_label: z.string().nullable(),
+});
+
+const taskResponse = z.object({
+  ok: z.boolean(),
+  error: z.string().optional(),
+  task: taskSchema.nullable(),
+});
+
+async function presentTask(ctx: Ctx, row: TaskRow): Promise<z.infer<typeof taskSchema>> {
+  const db = ctx.db<typeof schema>();
+  let customerName: string | null = null;
+  if (row.customerId !== null) {
+    const [c] = await db.select({ name: schema.customers.name, businessName: schema.customers.businessName })
+      .from(schema.customers).where(eq(schema.customers.id, row.customerId)).limit(1);
+    if (c) customerName = c.businessName || c.name;
+  }
+  return {
+    id: row.id,
+    title: row.title,
+    description: row.description,
+    assigned_to: row.assignedTo,
+    due_date: row.dueDate,
+    repeat_pattern: row.repeatPattern,
+    is_completed: row.isCompleted,
+    completed_at: row.completedAt ? row.completedAt.toISOString() : null,
+    customer_id: row.customerId,
+    customer_name: customerName,
+    priority: row.priority,
+    task_type: row.taskType,
+    created_by: row.createdBy,
+    created_at: row.createdAt.toISOString(),
+    updated_at: row.updatedAt.toISOString(),
+  };
+}
+
 type CustomerRow = typeof schema.customers.$inferSelect;
 type TaxRateSource = "exempt" | "override" | "state" | "unconfigured";
 
@@ -4125,6 +4185,241 @@ ${args.transcript.slice(0, 15000)}`,
       } catch {
         return { ok: false, error: "AI summaries need an API key — ask Randy." };
       }
+    },
+  }),
+  // ── Tasks / Daily Ops ──────────────────────────────────────────────
+
+  listTasks: defineAction({
+    request: z.object({
+      assigned_to: z.string().trim().max(100).optional(),
+      due_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+      include_completed: z.boolean().default(false),
+    }),
+    response: z.object({ tasks: z.array(taskSchema) }),
+    async handler(ctx, args) {
+      const db = ctx.db<typeof schema>();
+      const conditions = [];
+      if (args.assigned_to) conditions.push(eq(schema.tasks.assignedTo, args.assigned_to));
+      if (args.due_date) conditions.push(eq(schema.tasks.dueDate, args.due_date));
+      if (!args.include_completed) conditions.push(eq(schema.tasks.isCompleted, 0));
+      const rows = await db.select().from(schema.tasks)
+        .where(conditions.length ? and(...conditions) : undefined)
+        .orderBy(asc(schema.tasks.dueDate), desc(schema.tasks.priority), asc(schema.tasks.createdAt));
+      return { tasks: await Promise.all(rows.map((r) => presentTask(ctx, r))) };
+    },
+  }),
+
+  createTask: defineAction({
+    request: z.object({
+      title: z.string().trim().min(1).max(300),
+      description: z.string().trim().max(2000).default(""),
+      assigned_to: z.string().trim().min(1).max(100),
+      due_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().default(null),
+      repeat_pattern: z.enum(["none", "daily", "weekly"]).default("none"),
+      customer_id: z.number().int().positive().nullable().default(null),
+      priority: z.enum(["low", "normal", "high"]).default("normal"),
+      task_type: z.enum(["task", "sales_call", "visit"]).default("task"),
+    }),
+    response: taskResponse,
+    async handler(ctx, args) {
+      const db = ctx.db<typeof schema>();
+      if (args.customer_id !== null) {
+        const [customer] = await db.select({ id: schema.customers.id }).from(schema.customers).where(eq(schema.customers.id, args.customer_id)).limit(1);
+        if (!customer) return { ok: false, error: "Customer not found.", task: null };
+      }
+      const [row] = await db.insert(schema.tasks).values({
+        title: args.title.trim(),
+        description: args.description.trim(),
+        assignedTo: args.assigned_to.trim(),
+        dueDate: args.due_date,
+        repeatPattern: args.repeat_pattern,
+        customerId: args.customer_id,
+        priority: args.priority,
+        taskType: args.task_type,
+        createdBy: ctx.user?.displayName ?? ctx.user?.username ?? "",
+        isCompleted: 0,
+        completedAt: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }).returning();
+      if (!row) return { ok: false, error: "Could not save that task.", task: null };
+      ctx.invalidateQueries();
+      return { ok: true, task: await presentTask(ctx, row) };
+    },
+  }),
+
+  updateTask: defineAction({
+    request: z.object({
+      id: z.number().int().positive(),
+      title: z.string().trim().min(1).max(300).optional(),
+      description: z.string().trim().max(2000).optional(),
+      assigned_to: z.string().trim().min(1).max(100).optional(),
+      due_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
+      repeat_pattern: z.enum(["none", "daily", "weekly"]).optional(),
+      customer_id: z.number().int().positive().nullable().optional(),
+      priority: z.enum(["low", "normal", "high"]).optional(),
+      task_type: z.enum(["task", "sales_call", "visit"]).optional(),
+    }),
+    response: taskResponse,
+    async handler(ctx, args) {
+      const db = ctx.db<typeof schema>();
+      const patch: Record<string, unknown> = { updatedAt: new Date() };
+      if (args.title !== undefined) patch.title = args.title.trim();
+      if (args.description !== undefined) patch.description = args.description.trim();
+      if (args.assigned_to !== undefined) patch.assignedTo = args.assigned_to.trim();
+      if (args.due_date !== undefined) patch.dueDate = args.due_date;
+      if (args.repeat_pattern !== undefined) patch.repeatPattern = args.repeat_pattern;
+      if (args.priority !== undefined) patch.priority = args.priority;
+      if (args.task_type !== undefined) patch.taskType = args.task_type;
+      if (args.customer_id !== undefined) {
+        if (args.customer_id !== null) {
+          const [customer] = await db.select({ id: schema.customers.id }).from(schema.customers).where(eq(schema.customers.id, args.customer_id)).limit(1);
+          if (!customer) return { ok: false, error: "Customer not found.", task: null };
+        }
+        patch.customerId = args.customer_id;
+      }
+      const [row] = await db.update(schema.tasks).set(patch).where(eq(schema.tasks.id, args.id)).returning();
+      if (!row) return { ok: false, error: "Task not found.", task: null };
+      ctx.invalidateQueries();
+      return { ok: true, task: await presentTask(ctx, row) };
+    },
+  }),
+
+  completeTask: defineAction({
+    request: z.object({ id: z.number().int().positive() }),
+    response: z.object({ ok: z.boolean(), error: z.string().optional() }),
+    async handler(ctx, args) {
+      const db = ctx.db<typeof schema>();
+      const [row] = await db.update(schema.tasks).set({ isCompleted: 1, completedAt: new Date(), updatedAt: new Date() }).where(eq(schema.tasks.id, args.id)).returning({ id: schema.tasks.id });
+      if (!row) return { ok: false, error: "Task not found." };
+      ctx.invalidateQueries();
+      return { ok: true };
+    },
+  }),
+
+  reopenTask: defineAction({
+    request: z.object({ id: z.number().int().positive() }),
+    response: z.object({ ok: z.boolean(), error: z.string().optional() }),
+    async handler(ctx, args) {
+      const db = ctx.db<typeof schema>();
+      const [row] = await db.update(schema.tasks).set({ isCompleted: 0, completedAt: null, updatedAt: new Date() }).where(eq(schema.tasks.id, args.id)).returning({ id: schema.tasks.id });
+      if (!row) return { ok: false, error: "Task not found." };
+      ctx.invalidateQueries();
+      return { ok: true };
+    },
+  }),
+
+  deleteTask: defineAction({
+    request: z.object({ id: z.number().int().positive() }),
+    response: z.object({ ok: z.boolean(), error: z.string().optional() }),
+    async handler(ctx, args) {
+      const db = ctx.db<typeof schema>();
+      const [row] = await db.delete(schema.tasks).where(eq(schema.tasks.id, args.id)).returning({ id: schema.tasks.id });
+      if (!row) return { ok: false, error: "Task not found." };
+      ctx.invalidateQueries();
+      return { ok: true };
+    },
+  }),
+
+  getDailyTasks: defineAction({
+    request: z.object({
+      date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+      assigned_to: z.string().trim().max(100).optional(),
+    }),
+    response: z.object({ tasks: z.array(dailyTaskSchema) }),
+    async handler(ctx, args) {
+      const db = ctx.db<typeof schema>();
+      const target = args.date;
+      const targetDow = new Date(target + "T12:00:00Z").getUTCDay();
+
+      // Stored tasks: due on target date, not completed.
+      const storedConds = [eq(schema.tasks.dueDate, target), eq(schema.tasks.isCompleted, 0)];
+      if (args.assigned_to) storedConds.push(eq(schema.tasks.assignedTo, args.assigned_to));
+      const stored = await db.select().from(schema.tasks).where(and(...storedConds))
+        .orderBy(desc(schema.tasks.priority), asc(schema.tasks.createdAt));
+
+      // Repeating tasks: compute virtual instances (no DB rows).
+      const repeatConds = [eq(schema.tasks.isCompleted, 0), or(eq(schema.tasks.repeatPattern, "daily"), eq(schema.tasks.repeatPattern, "weekly"))];
+      if (args.assigned_to) repeatConds.push(eq(schema.tasks.assignedTo, args.assigned_to));
+      const repeaters = await db.select().from(schema.tasks).where(and(...repeatConds));
+      const virtual: Array<{ row: TaskRow; label: string }> = [];
+      for (const r of repeaters) {
+        if (r.dueDate === target) continue; // already covered by stored query
+        if (r.repeatPattern === "daily") {
+          virtual.push({ row: r, label: "Repeats daily" });
+        } else if (r.repeatPattern === "weekly") {
+          const anchorDow = r.dueDate ? new Date(r.dueDate + "T12:00:00Z").getUTCDay() : null;
+          // Weekly repeats on the anchor weekday; if no anchor, show every day.
+          if (anchorDow === null || anchorDow === targetDow) virtual.push({ row: r, label: "Repeats weekly" });
+        }
+      }
+
+      const out: z.infer<typeof dailyTaskSchema>[] = [];
+      for (const r of stored) out.push({ ...(await presentTask(ctx, r)), is_auto: false, auto_label: null });
+      for (const v of virtual) out.push({ ...(await presentTask(ctx, v.row)), is_auto: true, auto_label: v.label });
+
+      // Smart follow-ups: stale wishlist items (>7 days old, still open).
+      const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+      const staleWishes = await db.select({
+        id: schema.wishlistItems.id,
+        title: schema.wishlistItems.title,
+        createdAt: schema.wishlistItems.createdAt,
+        customerId: schema.customers.id,
+        customerName: schema.customers.name,
+        businessName: schema.customers.businessName,
+      })
+        .from(schema.wishlistItems)
+        .innerJoin(schema.customers, eq(schema.wishlistItems.customerId, schema.customers.id))
+        .where(and(eq(schema.wishlistItems.status, "open"), lt(schema.wishlistItems.createdAt, sevenDaysAgo)))
+        .limit(50);
+      for (const w of staleWishes) {
+        const custLabel = w.businessName || w.customerName;
+        out.push({
+          id: -w.id, title: `Follow up: ${custLabel} wished for ${w.title}`,
+          description: `Wishlist item from ${w.createdAt.toISOString().slice(0, 10)} — check stock or order it.`,
+          assigned_to: args.assigned_to ?? "", due_date: target, repeat_pattern: "none",
+          is_completed: 0, completed_at: null, customer_id: w.customerId,
+          customer_name: custLabel, priority: "normal", task_type: "task",
+          created_by: "", created_at: w.createdAt.toISOString(), updated_at: w.createdAt.toISOString(),
+          is_auto: true, auto_label: "Wishlist follow-up",
+        });
+      }
+
+      // Smart follow-ups: backordered receiving lines.
+      const backorders = await db.select({
+        productId: schema.receivingLines.productId,
+        rawDescription: schema.receivingLines.rawDescription,
+        backorderQty: schema.receivingLines.backorderQty,
+      })
+        .from(schema.receivingLines)
+        .where(gt(schema.receivingLines.backorderQty, 0))
+        .limit(50);
+      const seenProducts = new Set<number>();
+      for (const b of backorders) {
+        let label = b.rawDescription || "Unknown product";
+        if (b.productId !== null && !seenProducts.has(b.productId)) {
+          seenProducts.add(b.productId);
+          const [p] = await db.select({ title: schema.products.title }).from(schema.products).where(eq(schema.products.id, b.productId)).limit(1);
+          if (p) label = p.title;
+        } else if (b.productId !== null) {
+          continue; // already listed this product
+        }
+        out.push({
+          id: -(100000 + (b.productId ?? 0)), title: `Follow up on backorder: ${label} (${b.backorderQty} units)`,
+          description: "Backordered from supplier — check status or notify waiting customers.",
+          assigned_to: args.assigned_to ?? "", due_date: target, repeat_pattern: "none",
+          is_completed: 0, completed_at: null, customer_id: null, customer_name: null,
+          priority: "high", task_type: "task", created_by: "",
+          created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+          is_auto: true, auto_label: "Backorder follow-up",
+        });
+      }
+
+      // Sort: high priority first, then by type (visits, calls, tasks), then title.
+      const prioRank = { high: 0, normal: 1, low: 2 };
+      const typeRank = { visit: 0, sales_call: 1, task: 2 };
+      out.sort((a, b) => (prioRank[a.priority] - prioRank[b.priority]) || (typeRank[a.task_type] - typeRank[b.task_type]) || a.title.localeCompare(b.title));
+      return { tasks: out };
     },
   }),
 } satisfies ActionsModule;

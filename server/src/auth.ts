@@ -30,6 +30,8 @@ const STAFF_ALLOWED_ACTIONS = new Set([
   "createReturn",
   // Wishlist
   "addWishlistItem", "updateWishlistItem", "setWishlistStatus", "deleteWishlistItem",
+  // Tasks / Daily Ops
+  "listTasks", "createTask", "updateTask", "completeTask", "reopenTask", "deleteTask", "getDailyTasks",
   // Statements / deposits (view)
   "getMonthlyStatement", "getDepositReport", "listSalesOrders",
 ]);

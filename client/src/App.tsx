@@ -28,7 +28,7 @@ type Account = ApiResponse<typeof api, "getCustomerAccount">;
 type CustomerPreferences = ApiResponse<typeof api, "getCustomerPreferences">;
 type PreferenceItem = CustomerPreferences["most_bought"][number];
 type ManualPreference = CustomerPreferences["manual"][number];
-type View = "inventory" | "products" | "customers" | "checkout" | "settings" | "field" | "analytics" | "orders" | "markup" | "team" | "returns" | "salesorders" | "statements" | "deposits" | "users" | "help";
+type View = "inventory" | "products" | "customers" | "checkout" | "settings" | "field" | "analytics" | "orders" | "markup" | "team" | "returns" | "salesorders" | "statements" | "deposits" | "users" | "help" | "tasks";
 type DepositReport = ApiResponse<typeof api, "getDepositReport">;
 type FieldOrder = ApiResponse<typeof api, "listFieldOrders">["orders"][number];
 type Mode = "all" | "reorder";
@@ -70,6 +70,7 @@ const FileIcon = () => <Icon><path d="M6 2h8l4 4v16H6Z" /><path d="M14 2v4h4M9 1
 const DepositIcon = () => <Icon><rect x="2" y="6" width="20" height="12" rx="2" /><circle cx="12" cy="12" r="2.6" /><path d="M5.5 9.5h.01M18.5 14.5h.01" /></Icon>;
 const HelpIcon = () => <Icon><circle cx="12" cy="12" r="9" /><path d="M9.5 9a2.5 2.5 0 0 1 5 .2c0 1.7-2.5 2.1-2.5 3.8M12 17h.01" /></Icon>;
 const MicIcon = () => <Icon size={18}><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M5 11a7 7 0 0 0 14 0M12 18v3" /></Icon>;
+const TasksIcon = () => <Icon><path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2" /><rect x="9" y="3" width="6" height="4" rx="1" /><path d="m9 14 2 2 4-4" /></Icon>;
 
 function money(cents: number) { return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(cents / 100); }
 function percent(basisPoints: number) { return `${(basisPoints / 100).toFixed(2)}%`; }
@@ -4256,6 +4257,201 @@ const HELP_GUIDES: HelpGuide[] = [
   },
 ];
 
+type DailyTask = ApiResponse<typeof api, "getDailyTasks">["tasks"][number];
+
+function toISODate(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+function prettyDate(iso: string): string {
+  const [y, m, d] = iso.split("-").map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+}
+
+function TaskForm({ initial, employees, onClose, onSaved }: {
+  initial: DailyTask | null;
+  employees: string[];
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const queryClient = useQueryClient();
+  const [title, setTitle] = useState(initial?.title ?? "");
+  const [description, setDescription] = useState(initial?.description ?? "");
+  const [assignedTo, setAssignedTo] = useState(initial?.assigned_to ?? employees[0] ?? "Randy");
+  const [dueDate, setDueDate] = useState(initial?.due_date ?? toISODate(new Date()));
+  const [repeatPattern, setRepeatPattern] = useState<"none" | "daily" | "weekly">(initial?.repeat_pattern ?? "none");
+  const [priority, setPriority] = useState<"low" | "normal" | "high">(initial?.priority ?? "normal");
+  const [taskType, setTaskType] = useState<"task" | "sales_call" | "visit">(initial?.task_type ?? "task");
+  const [customerId, setCustomerId] = useState<number | null>(initial?.customer_id ?? null);
+  const [customerLabel, setCustomerLabel] = useState(initial?.customer_name ?? "");
+  const [customerSearch, setCustomerSearch] = useState("");
+  const [error, setError] = useState("");
+  const customerDeferred = useDeferredValue(customerSearch);
+  const customerResults = useQuery({
+    queryKey: ["task-customers", customerDeferred],
+    queryFn: () => api.listCustomers({ query: customerDeferred, limit: 10 }),
+    enabled: customerDeferred.trim().length > 0,
+  });
+
+  const save = useMutation({
+    mutationFn: () => initial && initial.id > 0
+      ? api.updateTask({ id: initial.id, title, description, assigned_to: assignedTo, due_date: dueDate, repeat_pattern: repeatPattern, customer_id: customerId, priority, task_type: taskType })
+      : api.createTask({ title, description, assigned_to: assignedTo, due_date: dueDate, repeat_pattern: repeatPattern, customer_id: customerId, priority, task_type: taskType }),
+    onSuccess: async (res) => {
+      if (!res.ok) { setError(res.error ?? "Could not save the task."); return; }
+      await queryClient.invalidateQueries({ queryKey: ["daily-tasks"] });
+      onSaved();
+    },
+    onError: () => setError("Could not save the task. Check your connection and try again."),
+  });
+
+  return <div className="modal-backdrop" onClick={onClose}>
+    <div className="modal-card tasks-form" onClick={(e) => e.stopPropagation()} role="dialog" aria-label={initial ? "Edit task" : "Add task"}>
+      <div className="modal-head"><h2>{initial ? "Edit task" : "Add task"}</h2><button type="button" className="icon-button" onClick={onClose} aria-label="Close"><CloseIcon /></button></div>
+      <label>Title<input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="e.g. Run bank deposit" maxLength={300} /></label>
+      <label>Details<textarea value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Anything the person doing it should know" rows={2} maxLength={2000} /></label>
+      <div className="tasks-form-row">
+        <label>Assign to<select value={assignedTo} onChange={(e) => setAssignedTo(e.target.value)}>{employees.map((n) => <option key={n} value={n}>{n}</option>)}</select></label>
+        <label>Due date<input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} /></label>
+      </div>
+      <div className="tasks-form-row">
+        <label>Repeat<select value={repeatPattern} onChange={(e) => setRepeatPattern(e.target.value as "none" | "daily" | "weekly")}><option value="none">Does not repeat</option><option value="daily">Daily</option><option value="weekly">Weekly</option></select></label>
+        <label>Priority<select value={priority} onChange={(e) => setPriority(e.target.value as "low" | "normal" | "high")}><option value="low">Low</option><option value="normal">Normal</option><option value="high">High</option></select></label>
+        <label>Type<select value={taskType} onChange={(e) => setTaskType(e.target.value as "task" | "sales_call" | "visit")}><option value="task">Task</option><option value="sales_call">Sales call</option><option value="visit">Customer visit</option></select></label>
+      </div>
+      <label>Customer (optional){customerId !== null ? <span className="tasks-customer-pick">{customerLabel || `Customer #${customerId}`}<button type="button" onClick={() => { setCustomerId(null); setCustomerLabel(""); }} aria-label="Remove customer"><CloseIcon /></button></span> : <input value={customerSearch} onChange={(e) => setCustomerSearch(e.target.value)} placeholder="Search customers…" />}{customerId === null && customerDeferred.trim() && customerResults.data ? <div className="tasks-customer-results">{customerResults.data.customers.map((c) => <button key={c.id} type="button" onClick={() => { setCustomerId(c.id); setCustomerLabel(c.business_name || c.name); setCustomerSearch(""); }}>{c.business_name || c.name}<small>{c.phone}</small></button>)}</div> : null}</label>
+      {error ? <p className="form-error" role="alert">{error}</p> : null}
+      <div className="form-actions"><button type="button" className="secondary-button" onClick={onClose}>Cancel</button><button type="button" className="primary-button" disabled={!title.trim() || save.isPending} onClick={() => save.mutate()}>{save.isPending ? "Saving…" : initial ? "Save changes" : "Add task"}</button></div>
+    </div>
+  </div>;
+}
+
+function TasksView() {
+  const queryClient = useQueryClient();
+  const { user } = useAuth();
+  const todayISO = toISODate(new Date());
+  const [dateISO, setDateISO] = useState(todayISO);
+  const [employee, setEmployee] = useState<string>("all");
+  const [formOpen, setFormOpen] = useState(false);
+  const [editing, setEditing] = useState<DailyTask | null>(null);
+  const [showCompleted, setShowCompleted] = useState(false);
+
+  const teamQuery = useQuery({ queryKey: ["sales-team"], queryFn: () => api.listSalesTeam({}) });
+  const teamNames = teamQuery.data?.members.filter((m) => m.active).map((m) => m.name) ?? [];
+  const employees = teamNames.length ? teamNames : ["Randy", "Nathan", "Alan"];
+
+  const dailyQuery = useQuery({
+    queryKey: ["daily-tasks", dateISO, employee],
+    queryFn: () => api.getDailyTasks({ date: dateISO, assigned_to: employee === "all" ? undefined : employee }),
+  });
+
+  const completedQuery = useQuery({
+    queryKey: ["completed-tasks", dateISO, employee],
+    queryFn: () => api.listTasks({ due_date: dateISO, assigned_to: employee === "all" ? undefined : employee, include_completed: true }),
+    enabled: showCompleted,
+  });
+
+  const invalidate = () => {
+    void queryClient.invalidateQueries({ queryKey: ["daily-tasks"] });
+    void queryClient.invalidateQueries({ queryKey: ["completed-tasks"] });
+  };
+
+  const completeMut = useMutation({
+    mutationFn: (id: number) => api.completeTask({ id }),
+    onSuccess: () => invalidate(),
+  });
+  const reopenMut = useMutation({
+    mutationFn: (id: number) => api.reopenTask({ id }),
+    onSuccess: () => invalidate(),
+  });
+  const deleteMut = useMutation({
+    mutationFn: (id: number) => api.deleteTask({ id }),
+    onSuccess: () => invalidate(),
+  });
+
+  const shiftDate = (days: number) => {
+    const [y, m, d] = dateISO.split("-").map(Number);
+    const dt = new Date(y, m - 1, d);
+    dt.setDate(dt.getDate() + days);
+    setDateISO(toISODate(dt));
+  };
+
+  const tasks = dailyQuery.data?.tasks ?? [];
+  const visits = tasks.filter((t) => t.task_type === "visit");
+  const calls = tasks.filter((t) => t.task_type === "sales_call");
+  const followups = tasks.filter((t) => t.is_auto);
+  const plain = tasks.filter((t) => t.task_type === "task" && !t.is_auto);
+  const completed = (completedQuery.data?.tasks ?? []).filter((t) => t.is_completed === 1);
+
+  const renderTask = (t: DailyTask) => <article key={`${t.is_auto ? "auto" : "db"}-${t.id}`} className={`tasks-card priority-${t.priority}`}>
+    <button type="button" className="tasks-check" aria-label={t.is_completed ? "Reopen task" : "Complete task"} disabled={t.is_auto || t.id < 0}
+      onClick={() => { if (!t.is_auto && t.id > 0) void completeMut.mutate(t.id); }}>
+      <span className="tasks-checkbox" />
+    </button>
+    <div className="tasks-body">
+      <div className="tasks-title-row"><strong>{t.title}</strong>{t.priority === "high" ? <span className="tasks-priority high">High</span> : t.priority === "low" ? <span className="tasks-priority low">Low</span> : null}{t.auto_label ? <span className="tasks-auto">{t.auto_label}</span> : null}</div>
+      {t.description ? <p>{t.description}</p> : null}
+      <div className="tasks-meta">
+        {employee === "all" && t.assigned_to ? <span>{t.assigned_to}</span> : null}
+        {t.customer_name ? <span className="tasks-customer">{t.customer_name}</span> : null}
+        {t.repeat_pattern !== "none" ? <span className="tasks-repeat">{t.repeat_pattern === "daily" ? "Daily" : "Weekly"}</span> : null}
+      </div>
+    </div>
+    {!t.is_auto && t.id > 0 ? <div className="tasks-actions">
+      <button type="button" className="icon-button" aria-label="Edit task" onClick={() => { setEditing(t); setFormOpen(true); }}><SettingsIcon /></button>
+      <button type="button" className="icon-button tasks-delete" aria-label="Delete task" onClick={() => { if (window.confirm(`Delete "${t.title}"?`)) void deleteMut.mutate(t.id); }}><TrashIcon /></button>
+    </div> : null}
+  </article>;
+
+  const renderGroup = (label: string, items: DailyTask[]) => items.length === 0 ? null : <section className="tasks-group"><h3>{label} <span>{items.length}</span></h3><div className="tasks-list">{items.map(renderTask)}</div></section>;
+
+  const isToday = dateISO === todayISO;
+  const tomorrowISO = (() => { const d = new Date(); d.setDate(d.getDate() + 1); return toISODate(d); })();
+
+  return <>
+    <section className="plain-command">
+      <div><p>DAILY OPS</p><h1>Tasks</h1></div>
+      <button type="button" className="primary-button" onClick={() => { setEditing(null); setFormOpen(true); }}><PlusIcon /> Add task</button>
+    </section>
+
+    <section className="tasks-controls">
+      <div className="tasks-date-nav">
+        <button type="button" className="secondary-button" onClick={() => shiftDate(-1)} aria-label="Previous day"><BackIcon /></button>
+        <button type="button" className={isToday ? "tasks-date-btn active" : "tasks-date-btn"} onClick={() => setDateISO(todayISO)}>Today</button>
+        <button type="button" className={dateISO === tomorrowISO ? "tasks-date-btn active" : "tasks-date-btn"} onClick={() => setDateISO(tomorrowISO)}>Tomorrow</button>
+        <input type="date" value={dateISO} onChange={(e) => { if (e.target.value) setDateISO(e.target.value); }} aria-label="Pick a date" />
+        <button type="button" className="secondary-button" onClick={() => shiftDate(1)} aria-label="Next day"><ChevronIcon /></button>
+      </div>
+      <div className="tasks-employee-tabs" role="tablist" aria-label="Filter by employee">
+        {["all", ...employees].map((n) => <button key={n} type="button" role="tab" aria-selected={employee === n} className={employee === n ? "active" : ""} onClick={() => setEmployee(n)}>{n === "all" ? "All" : n}</button>)}
+      </div>
+    </section>
+
+    {!isToday ? <p className="tasks-date-label">Showing {prettyDate(dateISO)}</p> : null}
+
+    {dailyQuery.isPending ? <div className="loading-list"><span /><span /><span /></div>
+      : tasks.length === 0 ? <div className="empty-state"><h2>Nothing on the list</h2><p>{isToday ? "Today is clear — add a task to get started." : "No tasks for this day yet."}</p><button className="primary-button" onClick={() => { setEditing(null); setFormOpen(true); }}>Add task</button></div>
+      : <>
+        {renderGroup("Customer visits", visits)}
+        {renderGroup("Sales calls", calls)}
+        {renderGroup("Tasks", plain)}
+        {renderGroup("Follow-ups", followups)}
+      </>}
+
+    <section className="tasks-completed-toggle">
+      <button type="button" className="secondary-button" onClick={() => setShowCompleted((v) => !v)}>{showCompleted ? "Hide completed" : "Show completed"}</button>
+    </section>
+    {showCompleted ? (completedQuery.isPending ? <div className="loading-list"><span /><span /></div>
+      : completed.length === 0 ? <p className="tasks-empty-note">No completed tasks for this day.</p>
+      : <section className="tasks-group"><h3>Completed <span>{completed.length}</span></h3><div className="tasks-list">{completed.map((t) => <article key={t.id} className="tasks-card completed">
+        <div className="tasks-body"><div className="tasks-title-row"><strong>{t.title}</strong></div>{t.assigned_to ? <div className="tasks-meta"><span>{t.assigned_to}</span></div> : null}</div>
+        <div className="tasks-actions"><button type="button" className="secondary-button" onClick={() => void reopenMut.mutate(t.id)}>Reopen</button></div>
+      </article>)}</div></section>) : null}
+
+    {formOpen ? <TaskForm initial={editing} employees={employees} onClose={() => { setFormOpen(false); setEditing(null); }} onSaved={() => { setFormOpen(false); setEditing(null); invalidate(); }} /> : null}
+  </>;
+}
+
 function HelpView() {
   const [openId, setOpenId] = useState<string | null>("checkout");
   const [search, setSearch] = useState("");
@@ -4390,7 +4586,7 @@ export function App() {
   const receiving = useQuery({ queryKey: ["receiving-documents"], queryFn: () => api.listReceivingDocuments({ limit: 25 }) });
   const receivingReviewCount = receiving.data?.needs_review_count ?? 0;
   const purchaseBadge = poDraftCount + receivingReviewCount;
-  const viewLabels: Record<View, string> = { checkout: "Checkout", field: "Field Orders", products: "Products", customers: "Customers", inventory: "Inventory", orders: "Purchase", analytics: "Analytics", settings: "Settings", markup: "Markup Rules", team: "Sales Team", returns: "Returns", salesorders: "Orders", statements: "Statements", deposits: "Deposits", users: "Users", help: "Help & Training" };
+  const viewLabels: Record<View, string> = { checkout: "Checkout", field: "Field Orders", tasks: "Tasks", products: "Products", customers: "Customers", inventory: "Inventory", orders: "Purchase", analytics: "Analytics", settings: "Settings", markup: "Markup Rules", team: "Sales Team", returns: "Returns", salesorders: "Orders", statements: "Statements", deposits: "Deposits", users: "Users", help: "Help & Training" };
   const go = (next: View) => { setView(next); setMenuOpen(false); };
   const navItem = (next: View, label: string, icon: ReactNode, badge = 0) => <button type="button" className={view === next ? "active" : ""} onClick={() => go(next)} aria-current={view === next ? "page" : undefined}>{icon}<span>{label}</span>{badge > 0 ? <span className="nav-badge">{badge}</span> : null}</button>;
   return <div className="app-shell">
@@ -4405,7 +4601,7 @@ export function App() {
       <aside className={`sidebar ${menuOpen ? "open" : ""}`} aria-label="Sidebar">
         <div className="sidebar-head"><div><span>WORKSPACE</span><strong>Store operations</strong></div><button type="button" className="sidebar-close" onClick={() => setMenuOpen(false)} aria-label="Close navigation menu"><CloseIcon /></button></div>
         <nav className="sidebar-nav" aria-label="Main sections">
-          <div className="sidebar-group"><p>Counter & field</p>{navItem("checkout", "Checkout", <CartIcon />)}{navItem("salesorders", "Orders", <FileIcon />)}{navItem("field", "Field Orders", <ClipboardIcon />, fieldDraftCount)}{navItem("customers", "Customers", <UserIcon />)}{navItem("statements", "Statements", <MailIcon />)}</div>
+          <div className="sidebar-group"><p>Counter & field</p>{navItem("checkout", "Checkout", <CartIcon />)}{navItem("salesorders", "Orders", <FileIcon />)}{navItem("field", "Field Orders", <ClipboardIcon />, fieldDraftCount)}{navItem("tasks", "Tasks", <TasksIcon />)}{navItem("customers", "Customers", <UserIcon />)}{navItem("statements", "Statements", <MailIcon />)}</div>
           <div className="sidebar-group"><p>Stock & ordering</p>{navItem("products", "Products", <TagIcon />)}{navItem("inventory", "Inventory", <BoxIcon />)}{navItem("orders", "Purchase", <TruckIcon />, purchaseBadge)}</div>
           <div className="sidebar-group"><p>Business</p>{navItem("analytics", "Analytics", <ChartIcon />)}{navItem("deposits", "Deposits", <DepositIcon />)}{navItem("returns", "Returns", <ReturnIcon />)}{navItem("markup", "Markup Rules", <TagIcon />)}{navItem("team", "Sales Team", <UserIcon />)}{navItem("settings", "Settings", <SettingsIcon />)}{user?.role === "admin" ? navItem("users", "Users", <UserIcon />) : null}</div>
           <div className="sidebar-group"><p>Resources</p>{navItem("help", "Help & Training", <HelpIcon />)}</div>
@@ -4415,7 +4611,7 @@ export function App() {
           <button type="button" className="sidebar-logout" onClick={() => void logout()}>Sign out</button>
         </div>
       </aside>
-      <main className="app-main">{view === "checkout" ? <CheckoutView onOpenCustomer={setAccountId} /> : view === "salesorders" ? <OrdersView onOpenCustomer={setAccountId} onOpenField={() => setView("field")} /> : view === "statements" ? <StatementsView onOpenCustomer={setAccountId} /> : view === "deposits" ? <DepositsView onOpenCustomer={setAccountId} /> : view === "field" ? <FieldOrdersView /> : view === "products" ? <ProductManagementView /> : view === "customers" ? <CustomersView /> : view === "inventory" ? <InventoryView /> : view === "orders" ? <PurchaseOrdersView /> : view === "analytics" ? <AnalyticsView /> : view === "markup" ? <MarkupRulesView /> : view === "team" ? <SalesTeamView /> : view === "returns" ? <ReturnsSummaryView /> : view === "users" ? <UserManagementView /> : view === "help" ? <HelpView /> : <SettingsView />}</main>
+      <main className="app-main">{view === "checkout" ? <CheckoutView onOpenCustomer={setAccountId} /> : view === "salesorders" ? <OrdersView onOpenCustomer={setAccountId} onOpenField={() => setView("field")} /> : view === "statements" ? <StatementsView onOpenCustomer={setAccountId} /> : view === "deposits" ? <DepositsView onOpenCustomer={setAccountId} /> : view === "field" ? <FieldOrdersView /> : view === "products" ? <ProductManagementView /> : view === "customers" ? <CustomersView /> : view === "inventory" ? <InventoryView /> : view === "orders" ? <PurchaseOrdersView /> : view === "analytics" ? <AnalyticsView /> : view === "markup" ? <MarkupRulesView /> : view === "team" ? <SalesTeamView /> : view === "returns" ? <ReturnsSummaryView /> : view === "users" ? <UserManagementView /> : view === "help" ? <HelpView /> : view === "tasks" ? <TasksView /> : <SettingsView />}</main>
     </div>
     {accountId !== null ? <AccountSheet id={accountId} onClose={() => setAccountId(null)} /> : null}
     <div id="rima-print-area" style={{ display: "none" }} aria-hidden="true" />
