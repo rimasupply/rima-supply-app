@@ -1832,6 +1832,14 @@ function downloadPdf(filename: string, title: string, body: string) {
   anchor.remove();
   window.setTimeout(() => URL.revokeObjectURL(url), 8000);
 }
+// Open a PDF blob in a new browser tab for viewing/printing.
+// The browser's built-in PDF viewer has a reliable print button,
+// which is more dependable than window.print() with CSS media queries.
+function openPdfInTab(blob: Blob) {
+  const url = URL.createObjectURL(blob);
+  window.open(url, "_blank", "noopener,noreferrer");
+  window.setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
 function escapeHtml(text: string): string {
   return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
@@ -1894,9 +1902,28 @@ function DeliveryActions({ subject, body, email, phone, filename, label, invoice
   const [note, setNote] = useState("");
   const printDoc = invoice ? <InvoiceDocument order={invoice.order} customer={invoice.customer} /> : statementData ? <StatementDocument data={statementData} /> : null;
   const doPrint = () => {
-    setNote("Opening the print dialog…");
-    printDocument(subject, body, printDoc ?? undefined);
-    setNote("");
+    // Open the branded PDF in a new tab — the browser's PDF viewer
+    // has a reliable print button. Falls back to the old print
+    // dialog only if PDF generation fails.
+    setNote("Preparing print preview…");
+    const openBranded = async () => {
+      try {
+        if (invoice) {
+          const blob = await buildInvoicePdfBlob(invoicePdfData(invoice.order, invoice.customer));
+          openPdfInTab(blob);
+        } else if (statementData) {
+          const blob = await buildStatementPdfBlob(statementData);
+          openPdfInTab(blob);
+        } else {
+          printDocument(subject, body, printDoc ?? undefined);
+        }
+        setNote("");
+      } catch {
+        printDocument(subject, body, printDoc ?? undefined);
+        setNote("");
+      }
+    };
+    void openBranded();
   };
   const getPdf = () => {
     if (invoice) {
@@ -1913,11 +1940,36 @@ function DeliveryActions({ subject, body, email, phone, filename, label, invoice
       doPrint();
     }
   };
+  // Email: download the branded PDF first so it can be attached,
+  // then open Gmail compose with the message text.
+  const doEmail = (href: string) => {
+    if (invoice) {
+      setNote("Downloading PDF to attach…");
+      void downloadInvoicePdf(filename, invoice.order, invoice.customer)
+        .catch(() => {})
+        .finally(() => {
+          setNote("PDF downloaded — attach it to the email.");
+          window.open(href, "_blank", "noopener,noreferrer");
+          window.setTimeout(() => setNote(""), 6000);
+        });
+    } else if (statementData) {
+      setNote("Downloading PDF to attach…");
+      void downloadStatementPdf(filename, statementData)
+        .catch(() => {})
+        .finally(() => {
+          setNote("PDF downloaded — attach it to the email.");
+          window.open(href, "_blank", "noopener,noreferrer");
+          window.setTimeout(() => setNote(""), 6000);
+        });
+    } else {
+      window.open(href, "_blank", "noopener,noreferrer");
+    }
+  };
   return <div className="delivery-actions-wrap">
     <div className="delivery-actions" aria-label={`${label} delivery options`}>
       <button type="button" className="print-action" onClick={doPrint} aria-label={`Print ${label}`}><PrinterIcon /> Print / PDF</button>
-      {gmailHref ? <a href={gmailHref} target="_blank" rel="noopener noreferrer" aria-label={`Email ${label} in Gmail`} onClick={() => setNote("Opening Gmail…")}><MailIcon /> Email (Gmail)</a> : <span aria-disabled="true" title="Add an email address to this customer"><MailIcon /> Email</span>}
-      {mailtoHref ? <a href={mailtoHref} aria-label={`Email ${label} with mail app`}>Mail app</a> : null}
+      {gmailHref ? <button type="button" onClick={() => doEmail(gmailHref)} aria-label={`Email ${label} in Gmail`}><MailIcon /> Email (Gmail)</button> : <span aria-disabled="true" title="Add an email address to this customer"><MailIcon /> Email</span>}
+      {mailtoHref ? <button type="button" onClick={() => doEmail(mailtoHref)} aria-label={`Email ${label} with mail app`}>Mail app</button> : null}
       {textHref ? <a href={textHref} aria-label={`Text ${label}`} onClick={() => setNote("Opening Messages…")}><MessageIcon /> Text</a> : <span aria-disabled="true" title="Add a phone number to this customer"><MessageIcon /> Text</span>}
       <button type="button" onClick={getPdf} aria-label={`Download PDF of ${label}`}><DownloadIcon /> Save PDF</button>
     </div>
@@ -2531,9 +2583,13 @@ function FieldOrderEditor({ orderId, initialOrder, onClose }: { orderId: string 
   });
   const [slipNote, setSlipNote] = useState("");
   const printSlip = () => {
-    setSlipNote("Opening the print dialog…");
-    printDocument(`RIMA Packing Slip — ${customerLabel}`, slipBody, <PackingSlipDocument data={slipData} />);
-    setSlipNote("");
+    setSlipNote("Preparing print preview…");
+    void buildPackingSlipPdfBlob(slipData)
+      .then((blob) => { openPdfInTab(blob); setSlipNote(""); })
+      .catch(() => {
+        printDocument(`RIMA Packing Slip — ${customerLabel}`, slipBody, <PackingSlipDocument data={slipData} />);
+        setSlipNote("");
+      });
   };
   const saveSlip = () => {
     setSlipNote("Preparing your packing slip PDF…");
@@ -2756,7 +2812,7 @@ function AnalyticsView() {
       "",
       totals ? `TOTALS: ${totals.sale_count} sales · Net ${money(totals.subtotal_cents)} · Total ${money(totals.total_cents)} · Collected ${money(totals.paid_cents)} · On account ${money(totals.balance_cents)} · Profit ${money(totals.profit_cents)} · Commission due ${money(totals.commission_cents)}` : "",
     ];
-    printDocument("RIMA salesperson summary", lines.join("\n"));
+    openPdfInTab(buildPdfBlob("RIMA salesperson summary", lines.join("\n")));
   };
   const toggleSort = (key: ItemSort) => { if (sortBy === key) setSortDir((dir) => dir === "desc" ? "asc" : "desc"); else { setSortBy(key); setSortDir(key === "title" ? "asc" : "desc"); } };
   const sortMark = (key: ItemSort) => sortBy === key ? (sortDir === "desc" ? " ↓" : " ↑") : "";
@@ -2973,9 +3029,13 @@ function PurchaseOrderCard({ order }: { order: PurchaseOrder }) {
   const [poPrintNote, setPoPrintNote] = useState("");
   const [confirming, setConfirming] = useState<"approve" | "cancel" | "receive" | null>(null);
   const printPo = () => {
-    setPoPrintNote("Opening the print dialog…");
-    printDocument(`RIMA Purchase Order ${order.po_number ?? ""} — ${order.supplier_label}`, poText(order), <PurchaseOrderDocument data={poPdfData(order)} />);
-    setPoPrintNote("");
+    setPoPrintNote("Preparing print preview…");
+    void buildPoPdfBlob(poPdfData(order))
+      .then((blob) => { openPdfInTab(blob); setPoPrintNote(""); })
+      .catch(() => {
+        printDocument(`RIMA Purchase Order ${order.po_number ?? ""} — ${order.supplier_label}`, poText(order), <PurchaseOrderDocument data={poPdfData(order)} />);
+        setPoPrintNote("");
+      });
   };
   const savePo = () => {
     setPoPrintNote("Preparing the purchase order PDF…");
@@ -3306,7 +3366,7 @@ function ReturnsSummaryView() {
   const pickPreset = (value: AnalyticsPreset) => { setPreset(value); if (value !== "custom") setRange(presetRange(value)); };
   const setManual = (key: "start" | "end", value: string) => { setPreset("custom"); setRange((c) => ({ ...c, [key]: value })); };
   const data = summary.data;
-  const printSummary = () => { if (!data) return; const lines = [`RETURNS SUMMARY — ${prettyRange(range.start, range.end)}`, `${data.total_returns} returns · ${data.total_units} units · ${money(data.total_cents)} total`, `Refunded ${money(data.refunded_cents)} · On-account credit ${money(data.credited_cents)}`, "", "BY REFUND METHOD", ...data.by_method.map((m) => `${refundMethodLabel(m.method)}: ${m.count} returns · ${money(m.total_cents)}`), "", "TOP REASONS", ...data.by_reason.slice(0, 10).map((r) => `${r.reason}: ${r.units} units · ${money(r.total_cents)}`)]; printDocument("RIMA returns summary", lines.join("\n")); };
+  const printSummary = () => { if (!data) return; const lines = [`RETURNS SUMMARY — ${prettyRange(range.start, range.end)}`, `${data.total_returns} returns · ${data.total_units} units · ${money(data.total_cents)} total`, `Refunded ${money(data.refunded_cents)} · On-account credit ${money(data.credited_cents)}`, "", "BY REFUND METHOD", ...data.by_method.map((m) => `${refundMethodLabel(m.method)}: ${m.count} returns · ${money(m.total_cents)}`), "", "TOP REASONS", ...data.by_reason.slice(0, 10).map((r) => `${r.reason}: ${r.units} units · ${money(r.total_cents)}`)]; openPdfInTab(buildPdfBlob("RIMA returns summary", lines.join("\n"))); };
   return <>
     <section className="plain-command"><div><p>RETURNS</p><h1>Returns summary</h1></div><button type="button" className="secondary-button print-report-button" onClick={printSummary} disabled={!data}><PrinterIcon /> Print summary</button></section>
     <section className="analytics-filters" aria-label="Returns date range"><div className="preset-chips" role="group" aria-label="Returns date presets">{([["month", "This month"], ["lastMonth", "Last month"], ["last30", "Last 30 days"], ["year", "This year"], ["all", "All time"], ["custom", "Custom"]] as Array<[AnalyticsPreset, string]>).map(([v, l]) => <button key={v} type="button" className={preset === v ? "active" : ""} onClick={() => pickPreset(v)} aria-label={`Returns range: ${l}`}>{l}</button>)}</div><div className="date-inputs"><label><span>From</span><input aria-label="Returns start date" type="date" value={range.start} onChange={(e) => setManual("start", e.target.value)} /></label><label><span>To</span><input aria-label="Returns end date" type="date" value={range.end} onChange={(e) => setManual("end", e.target.value)} /></label></div></section>
@@ -3783,8 +3843,13 @@ function DepositActions({ subject, body, filename, pdfData }: { subject: string;
   const mailtoHref = `mailto:?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
   const textHref = `sms:?&body=${encodeURIComponent(smsBodyFor(body))}`;
   const doPrint = () => {
-    setNote("Opening the print dialog…");
-    printDocument(subject, body, <DepositDocument data={pdfData} />);
+    setNote("Preparing print preview…");
+    void buildDepositPdfBlob(pdfData)
+      .then((blob) => { openPdfInTab(blob); setNote(""); })
+      .catch(() => {
+        printDocument(subject, body, <DepositDocument data={pdfData} />);
+        setNote("");
+      });
     setNote("");
   };
   const getPdf = () => {
