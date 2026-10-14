@@ -1,0 +1,1 @@
+{"compilerOptions":{"allowImportingTsExtensions":false,"baseUrl":".","jsx":"react-jsx","moduleResolution":"bundler","noEmit":true,"paths":{"@/*":["src/*"]},"types":["vite/client"]},"extends":"../tsconfig.base.json","include":["src","vite.config.ts"]}

@@ -1,0 +1,175 @@
+/**
+ * RIMA Supply — standalone server.
+ *
+ * Express + Drizzle (bun:sqlite) + express-session.
+ * Single action-dispatch endpoint: POST /api/action { action, args }.
+ */
+import { Database } from "bun:sqlite";
+import { drizzle } from "drizzle-orm/bun-sqlite";
+import express from "express";
+import session from "express-session";
+import { existsSync, mkdirSync, copyFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import * as schema from "./schema";
+import { Actions } from "./actions";
+import { authActions, ensureSeedAdmin, isActionAllowed } from "./auth";
+import { blobPathForKey, createBlobs } from "./blobs";
+import { runMigrations } from "./migrate";
+import { anthropicComplete, wrapDb, type AuthUser, type Ctx, type Db } from "./sdk-compat";
+
+declare module "express-session" {
+  interface SessionData {
+    user?: AuthUser;
+  }
+}
+
+const PORT = Number(process.env.PORT ?? 3000);
+const DATA_DIR = process.env.DATA_DIR ?? join(process.cwd(), "data");
+const DB_PATH = process.env.DB_PATH ?? join(DATA_DIR, "app.db");
+const SESSION_SECRET = process.env.SESSION_SECRET ?? "rima-dev-secret-change-me";
+const BASE_URL = process.env.BASE_URL ?? `http://localhost:${PORT}`;
+
+mkdirSync(DATA_DIR, { recursive: true });
+
+// Seed the database on first boot: if DATA_DIR/app.db doesn't exist, copy
+// the bundled seed database (shipped in the Docker image at ./data/app.db).
+const SEED_DB = join(process.cwd(), "data", "app.db");
+if (!existsSync(DB_PATH) && existsSync(SEED_DB) && resolve(SEED_DB) !== resolve(DB_PATH)) {
+  console.log(`[rima] Seeding database from ${SEED_DB}`);
+  copyFileSync(SEED_DB, DB_PATH);
+}
+
+// ---- Database ----
+const sqlite = new Database(DB_PATH, { create: true });
+sqlite.exec("PRAGMA journal_mode = WAL;");
+sqlite.exec("PRAGMA foreign_keys = ON;");
+const db: Db = wrapDb(drizzle(sqlite, { schema }));
+
+// Run migrations (SQL files in server/drizzle, tracked in __migrations).
+runMigrations(sqlite, join(process.cwd(), "server", "drizzle"));
+
+// Seed initial admin if the users table is empty.
+await ensureSeedAdmin(db);
+
+// ---- App ----
+const app = express();
+app.set("trust proxy", 1);
+app.use(express.json({ limit: "16mb" }));
+
+app.use(
+  session({
+    name: "rima.sid",
+    secret: SESSION_SECRET,
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+      httpOnly: true,
+      sameSite: "lax",
+      secure: process.env.NODE_ENV === "production" && process.env.COOKIE_SECURE !== "0",
+      maxAge: 1000 * 60 * 60 * 24 * 14, // 14 days
+    },
+  }) as unknown as express.RequestHandler,
+);
+
+const blobs = createBlobs(BASE_URL);
+
+/** Build the per-request action context. */
+function makeCtx(user: AuthUser | null): Ctx {
+  return {
+    db: () => db,
+    blobs,
+    invalidateQueries: () => {},
+    executePrivileged: (contract, a) => contract.run(a),
+    inference: { complete: (prompt, options) => anthropicComplete(prompt, options) },
+    user,
+  };
+}
+const allActions: Record<string, { request: any; handler: (ctx: Ctx, args: any) => Promise<any> }> = {
+  ...Actions,
+  ...authActions,
+};
+
+// ---- Action dispatch ----
+app.post("/api/action", async (req, res) => {
+  const { action, args } = req.body ?? {};
+  if (typeof action !== "string" || !allActions[action]) {
+    res.status(404).json({ ok: false, error: "Unknown action." });
+    return;
+  }
+  const user: AuthUser | null = req.session.user ?? null;
+
+  // Login sets the session user on success.
+  if (action === "login") {
+    const def = allActions[action];
+    const parsed = def.request.safeParse(args ?? {});
+    if (!parsed.success) {
+      res.status(400).json({ ok: false, error: "Invalid request." });
+      return;
+    }
+    const result = await def.handler(makeCtx(null), parsed.data);
+    if (result.ok && result.user) {
+      req.session.user = result.user;
+    }
+    res.json(result);
+    return;
+  }
+
+  if (action === "logout") {
+    req.session.destroy(() => {});
+    res.json({ ok: true });
+    return;
+  }
+
+  if (!isActionAllowed(action, user)) {
+    res.status(user ? 403 : 401).json({ ok: false, error: user ? "Not permitted for your role." : "Please sign in." });
+    return;
+  }
+
+  const def = allActions[action];
+  const parsed = def.request.safeParse(args ?? {});
+  if (!parsed.success) {
+    res.status(400).json({ ok: false, error: "Invalid request.", details: parsed.error.flatten() });
+    return;
+  }
+
+  try {
+    const result = await def.handler(makeCtx(user), parsed.data);
+    res.json(result);
+  } catch (err) {
+    console.error(`[action:${action}]`, err);
+    res.status(500).json({ ok: false, error: "Something went wrong. Try again." });
+  }
+});
+
+// ---- Blob serving (product thumbnails, receiving PDFs) ----
+app.get("/api/blobs/:key", (req, res) => {
+  if (!req.session.user) {
+    res.status(401).json({ ok: false, error: "Please sign in." });
+    return;
+  }
+  const key = decodeURIComponent(req.params.key);
+  const path = blobPathForKey(key);
+  if (!existsSync(path)) {
+    res.status(404).json({ ok: false, error: "File not found." });
+    return;
+  }
+  res.sendFile(resolve(path));
+});
+
+// ---- Health check (for Railway) ----
+app.get("/api/health", (_req, res) => res.json({ ok: true, time: new Date().toISOString() }));
+
+// ---- Static client ----
+const clientDir = join(process.cwd(), "client", "dist");
+if (existsSync(join(clientDir, "index.html"))) {
+  app.use(express.static(clientDir));
+  app.use((_req, res) => {
+    res.sendFile(join(clientDir, "index.html"));
+  });
+} else {
+  app.get("/", (_req, res) => res.send("RIMA Supply API — client not built yet. Run: bun run build:client"));
+}
+
+app.listen(PORT, () => {
+  console.log(`[rima] Listening on :${PORT} (data: ${DATA_DIR})`);
+});
