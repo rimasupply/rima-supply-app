@@ -52956,6 +52956,52 @@ function runMigrations(sqlite, migrationsFolder) {
 }
 
 // server/src/index.ts
+class SqliteSessionStore extends import_express_session.default.Store {
+  sqlite;
+  constructor(sqlite) {
+    super();
+    this.sqlite = sqlite;
+    sqlite.exec(`CREATE TABLE IF NOT EXISTS sessions (
+      sid TEXT PRIMARY KEY,
+      sess TEXT NOT NULL,
+      expires INTEGER NOT NULL
+    )`);
+    sqlite.exec(`CREATE INDEX IF NOT EXISTS sessions_expires_idx ON sessions (expires)`);
+  }
+  get(sid, cb) {
+    try {
+      const row = this.sqlite.query(`SELECT sess, expires FROM sessions WHERE sid = ?`).get(sid);
+      if (!row || row.expires < Date.now()) {
+        if (row)
+          this.sqlite.query(`DELETE FROM sessions WHERE sid = ?`).run(sid);
+        return cb(null, null);
+      }
+      cb(null, JSON.parse(row.sess));
+    } catch (err) {
+      cb(err);
+    }
+  }
+  set(sid, sess, cb) {
+    try {
+      const expires = sess.cookie?.expires ? new Date(sess.cookie.expires).getTime() : Date.now() + 14 * 24 * 60 * 60 * 1000;
+      this.sqlite.query(`INSERT OR REPLACE INTO sessions (sid, sess, expires) VALUES (?, ?, ?)`).run(sid, JSON.stringify(sess), expires);
+      cb?.();
+    } catch (err) {
+      cb?.(err);
+    }
+  }
+  destroy(sid, cb) {
+    try {
+      this.sqlite.query(`DELETE FROM sessions WHERE sid = ?`).run(sid);
+      cb?.();
+    } catch (err) {
+      cb?.(err);
+    }
+  }
+  touch(sid, sess, cb) {
+    this.set(sid, sess, cb);
+  }
+}
 var PORT = Number(process.env.PORT ?? 3000);
 var DATA_DIR = process.env.DATA_DIR ?? join4(process.cwd(), "data");
 var DB_PATH = process.env.DB_PATH ?? join4(DATA_DIR, "app.db");
@@ -52979,6 +53025,7 @@ app.use(import_express.default.json({ limit: "16mb" }));
 app.use(import_express_session.default({
   name: "rima.sid",
   secret: SESSION_SECRET,
+  store: new SqliteSessionStore(sqlite),
   resave: false,
   saveUninitialized: false,
   cookie: {

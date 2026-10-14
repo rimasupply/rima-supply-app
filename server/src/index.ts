@@ -23,6 +23,45 @@ declare module "express-session" {
   }
 }
 
+/** SQLite-backed session store so logins survive server restarts/redeploys. */
+class SqliteSessionStore extends session.Store {
+  constructor(private sqlite: Database) {
+    super();
+    sqlite.exec(`CREATE TABLE IF NOT EXISTS sessions (
+      sid TEXT PRIMARY KEY,
+      sess TEXT NOT NULL,
+      expires INTEGER NOT NULL
+    )`);
+    sqlite.exec(`CREATE INDEX IF NOT EXISTS sessions_expires_idx ON sessions (expires)`);
+  }
+  get(sid: string, cb: (err: unknown, sess?: session.SessionData | null) => void) {
+    try {
+      const row = this.sqlite.query(`SELECT sess, expires FROM sessions WHERE sid = ?`).get(sid) as { sess: string; expires: number } | null;
+      if (!row || row.expires < Date.now()) {
+        if (row) this.sqlite.query(`DELETE FROM sessions WHERE sid = ?`).run(sid);
+        return cb(null, null);
+      }
+      cb(null, JSON.parse(row.sess));
+    } catch (err) { cb(err); }
+  }
+  set(sid: string, sess: session.SessionData, cb?: (err?: unknown) => void) {
+    try {
+      const expires = sess.cookie?.expires ? new Date(sess.cookie.expires).getTime() : Date.now() + 14 * 24 * 60 * 60 * 1000;
+      this.sqlite.query(`INSERT OR REPLACE INTO sessions (sid, sess, expires) VALUES (?, ?, ?)`).run(sid, JSON.stringify(sess), expires);
+      cb?.();
+    } catch (err) { cb?.(err); }
+  }
+  destroy(sid: string, cb?: (err?: unknown) => void) {
+    try {
+      this.sqlite.query(`DELETE FROM sessions WHERE sid = ?`).run(sid);
+      cb?.();
+    } catch (err) { cb?.(err); }
+  }
+  touch(sid: string, sess: session.SessionData, cb?: (err?: unknown) => void) {
+    this.set(sid, sess, cb);
+  }
+}
+
 const PORT = Number(process.env.PORT ?? 3000);
 const DATA_DIR = process.env.DATA_DIR ?? join(process.cwd(), "data");
 const DB_PATH = process.env.DB_PATH ?? join(DATA_DIR, "app.db");
@@ -60,6 +99,7 @@ app.use(
   session({
     name: "rima.sid",
     secret: SESSION_SECRET,
+    store: new SqliteSessionStore(sqlite),
     resave: false,
     saveUninitialized: false,
     cookie: {
