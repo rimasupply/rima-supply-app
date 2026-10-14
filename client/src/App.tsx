@@ -1864,9 +1864,11 @@ function printDocument(title: string, body: string, doc?: ReactNode) {
     window.removeEventListener("afterprint", cleanup);
   };
   window.addEventListener("afterprint", cleanup);
-  window.print();
+  // Give the browser a beat to paint the rendered document before opening
+  // the print dialog; without this the preview can come up blank.
+  window.setTimeout(() => { window.print(); }, 350);
   // Fallback cleanup in case afterprint doesn't fire.
-  window.setTimeout(() => { if (document.getElementById("print-root")?.innerHTML) cleanup(); }, 5000);
+  window.setTimeout(() => { if (document.getElementById("print-root")?.innerHTML) cleanup(); }, 8000);
 }
 
 function gmailComposeUrl(to: string, subject: string, body: string): string {
