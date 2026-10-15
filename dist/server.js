@@ -28024,7 +28024,21 @@ function listBackupFiles(dataDir) {
 }
 function safeBackupFilename(filename) {
   const base = basename(filename);
-  return BACKUP_FILENAME_RE.test(base) ? base : null;
+  return BACKUP_FILENAME_RE.test(base) || SAFETY_FILENAME_RE.test(base) ? base : null;
+}
+function listSafetyCopies(dataDir) {
+  const dir = backupsDir(dataDir);
+  if (!existsSync(dir))
+    return [];
+  return readdirSync(dir).filter((f) => SAFETY_FILENAME_RE.test(f)).map((f) => {
+    const full = join2(dir, f);
+    try {
+      const stat = statSync(full);
+      return { filename: f, size_bytes: stat.size, created_at: stat.mtimeMs };
+    } catch {
+      return null;
+    }
+  }).filter((x) => x !== null).sort((a, b) => b.created_at - a.created_at);
 }
 function pruneOldBackups(dataDir) {
   const files = listBackupFiles(dataDir);
@@ -28063,12 +28077,115 @@ async function maybeAutoBackup(sqlite, dataDir) {
     console.log("[backup] Auto-backup failed:", e);
   }
 }
-var MAX_BACKUPS = 10, BACKUP_FILENAME_RE;
+var MAX_BACKUPS = 10, BACKUP_FILENAME_RE, SAFETY_FILENAME_RE;
 var init_backup = __esm(() => {
   init_bun_sqlite();
   init_schema();
   init_drizzle_orm();
   BACKUP_FILENAME_RE = /^rima-backup-\d{4}-\d{2}-\d{2}-\d{4}\.db$/;
+  SAFETY_FILENAME_RE = /^pre-restore-\d{4}-\d{2}-\d{2}-\d{4}\.db$/;
+});
+
+// server/src/restore.ts
+import { Database as Database2 } from "bun:sqlite";
+import { copyFileSync, existsSync as existsSync2, mkdirSync as mkdirSync2, unlinkSync as unlinkSync2, writeFileSync } from "fs";
+import { join as join3 } from "path";
+function setRestoreContext(ctx) {
+  restoreCtx = ctx;
+}
+function stamp() {
+  return new Date().toISOString().slice(0, 16).replace("T", "-").replace(":", "");
+}
+function validateDatabaseFile(path) {
+  let db = null;
+  try {
+    db = new Database2(path, { readonly: true });
+    const rows = db.query("SELECT name FROM sqlite_master WHERE type='table'").all();
+    const names = new Set(rows.map((r) => r.name));
+    return EXPECTED_TABLES.every((t) => names.has(t));
+  } catch {
+    return false;
+  } finally {
+    try {
+      db?.close();
+    } catch {}
+  }
+}
+function requestRestore(dataBase64) {
+  if (!restoreCtx) {
+    return { ok: false, error: "Restore is not available right now. Try again in a moment." };
+  }
+  const { sqlite, dbPath, dataDir } = restoreCtx;
+  const dir = backupsDir(dataDir);
+  try {
+    mkdirSync2(dir, { recursive: true });
+  } catch {}
+  const safetyName = `pre-restore-${stamp()}.db`;
+  const safetyPath = join3(dir, safetyName);
+  try {
+    try {
+      sqlite.exec("PRAGMA wal_checkpoint(TRUNCATE);");
+    } catch {}
+    copyFileSync(dbPath, safetyPath);
+  } catch (e) {
+    console.log("[restore] Could not create safety copy:", e);
+    return { ok: false, error: "Could not save a safety copy of your current data. Restore aborted \u2014 nothing was changed." };
+  }
+  const tmpPath = join3(dir, `restore-upload-${Date.now()}.tmp`);
+  const fail = (error) => {
+    try {
+      unlinkSync2(tmpPath);
+    } catch {}
+    return { ok: false, error };
+  };
+  let buf;
+  try {
+    buf = Buffer.from(dataBase64, "base64");
+    if (buf.length < 100)
+      throw new Error("too small");
+    if (buf.subarray(0, 16).toString("binary") !== SQLITE_MAGIC)
+      throw new Error("bad magic");
+    writeFileSync(tmpPath, buf);
+  } catch (e) {
+    console.log("[restore] Upload rejected (not a SQLite file):", e);
+    return fail("That file doesn't look like a valid RIMA database.");
+  }
+  if (!validateDatabaseFile(tmpPath)) {
+    console.log("[restore] Upload rejected (missing expected tables).");
+    return fail("That file doesn't look like a valid RIMA database.");
+  }
+  try {
+    try {
+      sqlite.exec("PRAGMA wal_checkpoint(TRUNCATE);");
+    } catch {}
+    try {
+      sqlite.close();
+    } catch {}
+  } catch (e) {
+    console.log("[restore] Error closing live DB:", e);
+  }
+  try {
+    copyFileSync(tmpPath, dbPath);
+    for (const suffix of ["-wal", "-shm", "-journal"]) {
+      try {
+        unlinkSync2(dbPath + suffix);
+      } catch {}
+    }
+    try {
+      unlinkSync2(tmpPath);
+    } catch {}
+  } catch (e) {
+    console.log("[restore] Failed to replace database file:", e);
+    return { ok: false, error: "Restore failed while replacing the database. Your current data was not changed." };
+  }
+  console.log(`[restore] Database restored from upload. Safety copy saved as ${safetyName}. Exiting for restart...`);
+  setTimeout(() => process.exit(0), 1500);
+  return { ok: true, backup_of_current: safetyName };
+}
+var restoreCtx = null, EXPECTED_TABLES, SQLITE_MAGIC = "SQLite format 3\x00";
+var init_restore = __esm(() => {
+  init_backup();
+  EXPECTED_TABLES = ["products", "sales", "customers"];
 });
 
 // node_modules/bcryptjs/dist/bcrypt.js
@@ -29883,9 +30000,9 @@ init_bun_sqlite();
 init_schema();
 var import_express = __toESM(require_express(), 1);
 var import_express_session = __toESM(require_express_session(), 1);
-import { Database as Database2 } from "bun:sqlite";
-import { existsSync as existsSync2, mkdirSync as mkdirSync2, copyFileSync } from "fs";
-import { join as join5, resolve as resolve2 } from "path";
+import { Database as Database3 } from "bun:sqlite";
+import { existsSync as existsSync3, mkdirSync as mkdirSync3, copyFileSync as copyFileSync2 } from "fs";
+import { join as join6, resolve as resolve2 } from "path";
 
 // node_modules/zod/v4/core/core.js
 var _a;
@@ -53510,13 +53627,14 @@ ${textResult.text.slice(0, 60000)}`, {
     request: object({}),
     response: object({
       ok: boolean2(),
-      backups: array(object({ filename: string2(), size_bytes: number2(), created_at: number2() }))
+      backups: array(object({ filename: string2(), size_bytes: number2(), created_at: number2() })),
+      safety_copies: array(object({ filename: string2(), size_bytes: number2(), created_at: number2() }))
     }),
     async handler() {
       const { join } = await import("path");
       await Promise.resolve().then(() => init_backup());
       const DATA_DIR = process.env.DATA_DIR ?? join(process.cwd(), "data");
-      return { ok: true, backups: listBackupFiles(DATA_DIR) };
+      return { ok: true, backups: listBackupFiles(DATA_DIR), safety_copies: listSafetyCopies(DATA_DIR) };
     }
   }),
   downloadBackup: defineAction({
@@ -53540,6 +53658,17 @@ ${textResult.text.slice(0, 60000)}`, {
       } catch {
         return { ok: false, filename: "", data_base64: "", size_bytes: 0, error: "Could not read backup file." };
       }
+    }
+  }),
+  restoreDatabase: defineAction({
+    request: object({
+      filename: string2().trim().max(200),
+      data_base64: string2().min(100).max(150000000)
+    }),
+    response: object({ ok: boolean2(), error: string2().optional(), backup_of_current: string2().optional() }),
+    async handler(_ctx, args) {
+      await Promise.resolve().then(() => init_restore());
+      return requestRestore(args.data_base64);
     }
   })
 };
@@ -53762,13 +53891,13 @@ async function ensureSeedAdmin(db) {
 
 // server/src/blobs.ts
 import { mkdir, rm as rm2, writeFile as writeFile2 } from "fs/promises";
-import { dirname, join as join3, resolve, sep } from "path";
+import { dirname, join as join4, resolve, sep } from "path";
 function dataDir() {
-  return process.env.DATA_DIR ?? join3(process.cwd(), "data");
+  return process.env.DATA_DIR ?? join4(process.cwd(), "data");
 }
 function keyToPath(key) {
   const safe = key.split("/").filter((p) => p && p !== "." && p !== "..").join(sep);
-  return resolve(join3(dataDir(), "blobs"), safe);
+  return resolve(join4(dataDir(), "blobs"), safe);
 }
 function createBlobs(baseUrl) {
   return {
@@ -53793,7 +53922,7 @@ function blobPathForKey(key) {
 
 // server/src/migrate.ts
 import { readdirSync as readdirSync2, readFileSync } from "fs";
-import { join as join4 } from "path";
+import { join as join5 } from "path";
 var BASELINE_APPLIED = ["0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010", "0011", "0012", "0013", "0014", "0015", "0016", "0017", "0018", "0019", "0020", "0021"];
 function runMigrations(sqlite, migrationsFolder) {
   sqlite.exec(`CREATE TABLE IF NOT EXISTS __migrations (id TEXT PRIMARY KEY, applied_at INTEGER NOT NULL)`);
@@ -53813,7 +53942,7 @@ function runMigrations(sqlite, migrationsFolder) {
     const id = file.slice(0, 4);
     if (applied.has(id))
       continue;
-    const sql = readFileSync(join4(migrationsFolder, file), "utf8");
+    const sql = readFileSync(join5(migrationsFolder, file), "utf8");
     console.log(`[migrate] Applying ${file}\u2026`);
     sqlite.exec(sql);
     sqlite.prepare("INSERT INTO __migrations (id, applied_at) VALUES (?, ?)").run(id, Date.now());
@@ -53822,6 +53951,7 @@ function runMigrations(sqlite, migrationsFolder) {
 }
 
 // server/src/index.ts
+init_restore();
 class SqliteSessionStore extends import_express_session.default.Store {
   sqlite;
   constructor(sqlite) {
@@ -53869,25 +53999,26 @@ class SqliteSessionStore extends import_express_session.default.Store {
   }
 }
 var PORT = Number(process.env.PORT ?? 3000);
-var DATA_DIR = process.env.DATA_DIR ?? join5(process.cwd(), "data");
-var DB_PATH = process.env.DB_PATH ?? join5(DATA_DIR, "app.db");
+var DATA_DIR = process.env.DATA_DIR ?? join6(process.cwd(), "data");
+var DB_PATH = process.env.DB_PATH ?? join6(DATA_DIR, "app.db");
 var SESSION_SECRET = process.env.SESSION_SECRET ?? "rima-dev-secret-change-me";
 var BASE_URL = process.env.BASE_URL ?? `http://localhost:${PORT}`;
-mkdirSync2(DATA_DIR, { recursive: true });
-var SEED_DB = join5(process.cwd(), "data", "app.db");
-if (!existsSync2(DB_PATH) && existsSync2(SEED_DB) && resolve2(SEED_DB) !== resolve2(DB_PATH)) {
+mkdirSync3(DATA_DIR, { recursive: true });
+var SEED_DB = join6(process.cwd(), "data", "app.db");
+if (!existsSync3(DB_PATH) && existsSync3(SEED_DB) && resolve2(SEED_DB) !== resolve2(DB_PATH)) {
   console.log(`[rima] Seeding database from ${SEED_DB}`);
-  copyFileSync(SEED_DB, DB_PATH);
+  copyFileSync2(SEED_DB, DB_PATH);
 }
-var sqlite = new Database2(DB_PATH, { create: true });
+var sqlite = new Database3(DB_PATH, { create: true });
 sqlite.exec("PRAGMA journal_mode = WAL;");
 sqlite.exec("PRAGMA foreign_keys = ON;");
 var db2 = wrapDb(drizzle(sqlite, { schema: exports_schema }));
-runMigrations(sqlite, join5(process.cwd(), "server", "drizzle"));
+runMigrations(sqlite, join6(process.cwd(), "server", "drizzle"));
 await ensureSeedAdmin(db2);
+setRestoreContext({ sqlite, dbPath: DB_PATH, dataDir: DATA_DIR });
 var app = import_express.default();
 app.set("trust proxy", 1);
-app.use(import_express.default.json({ limit: "16mb" }));
+app.use(import_express.default.json({ limit: "150mb" }));
 app.use(import_express_session.default({
   name: "rima.sid",
   secret: SESSION_SECRET,
@@ -53967,18 +54098,18 @@ app.get("/api/blobs/:key", (req, res) => {
   }
   const key = decodeURIComponent(req.params.key);
   const path = blobPathForKey(key);
-  if (!existsSync2(path)) {
+  if (!existsSync3(path)) {
     res.status(404).json({ ok: false, error: "File not found." });
     return;
   }
   res.sendFile(resolve2(path));
 });
 app.get("/api/health", (_req, res) => res.json({ ok: true, time: new Date().toISOString() }));
-var clientDir = join5(process.cwd(), "client", "dist");
-if (existsSync2(join5(clientDir, "index.html"))) {
+var clientDir = join6(process.cwd(), "client", "dist");
+if (existsSync3(join6(clientDir, "index.html"))) {
   app.use(import_express.default.static(clientDir));
   app.use((_req, res) => {
-    res.sendFile(join5(clientDir, "index.html"));
+    res.sendFile(join6(clientDir, "index.html"));
   });
 } else {
   app.get("/", (_req, res) => res.send("RIMA Supply API \u2014 client not built yet. Run: bun run build:client"));

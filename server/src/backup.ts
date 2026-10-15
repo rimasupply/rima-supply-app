@@ -14,6 +14,8 @@ import { eq } from "drizzle-orm";
 
 const MAX_BACKUPS = 10;
 const BACKUP_FILENAME_RE = /^rima-backup-\d{4}-\d{2}-\d{2}-\d{4}\.db$/;
+/** Safety copies written automatically before a database restore. Never pruned. */
+const SAFETY_FILENAME_RE = /^pre-restore-\d{4}-\d{2}-\d{2}-\d{4}\.db$/;
 
 export function backupsDir(dataDir: string): string {
   return join(dataDir, "backups");
@@ -40,7 +42,26 @@ export function listBackupFiles(dataDir: string): Array<{ filename: string; size
 /** Validate a backup filename to prevent path traversal. Returns the safe basename or null. */
 export function safeBackupFilename(filename: string): string | null {
   const base = basename(filename);
-  return BACKUP_FILENAME_RE.test(base) ? base : null;
+  return BACKUP_FILENAME_RE.test(base) || SAFETY_FILENAME_RE.test(base) ? base : null;
+}
+
+/** List the pre-restore safety copies (newest first). These are never auto-pruned. */
+export function listSafetyCopies(dataDir: string): Array<{ filename: string; size_bytes: number; created_at: number }> {
+  const dir = backupsDir(dataDir);
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir)
+    .filter((f) => SAFETY_FILENAME_RE.test(f))
+    .map((f) => {
+      const full = join(dir, f);
+      try {
+        const stat = statSync(full);
+        return { filename: f, size_bytes: stat.size, created_at: stat.mtimeMs };
+      } catch {
+        return null;
+      }
+    })
+    .filter((x): x is { filename: string; size_bytes: number; created_at: number } => x !== null)
+    .sort((a, b) => b.created_at - a.created_at);
 }
 
 function pruneOldBackups(dataDir: string): void {

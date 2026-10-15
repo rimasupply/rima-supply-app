@@ -15,6 +15,7 @@ import { Actions } from "./actions";
 import { authActions, ensureSeedAdmin, isActionAllowed } from "./auth";
 import { blobPathForKey, createBlobs } from "./blobs";
 import { runMigrations } from "./migrate";
+import { setRestoreContext } from "./restore";
 import { anthropicComplete, wrapDb, type AuthUser, type Ctx, type Db } from "./sdk-compat";
 
 declare module "express-session" {
@@ -90,10 +91,14 @@ runMigrations(sqlite, join(process.cwd(), "server", "drizzle"));
 // Seed initial admin if the users table is empty.
 await ensureSeedAdmin(db);
 
+// Register the live DB with the restore module (enables safe restore-from-backup).
+setRestoreContext({ sqlite, dbPath: DB_PATH, dataDir: DATA_DIR });
+
 // ---- App ----
 const app = express();
 app.set("trust proxy", 1);
-app.use(express.json({ limit: "16mb" }));
+// Raised to allow full database backup uploads for restore (client caps at 100MB).
+app.use(express.json({ limit: "150mb" }));
 
 app.use(
   session({

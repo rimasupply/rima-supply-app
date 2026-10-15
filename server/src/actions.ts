@@ -5123,12 +5123,13 @@ ${args.transcript.slice(0, 15000)}`,
     response: z.object({
       ok: z.boolean(),
       backups: z.array(z.object({ filename: z.string(), size_bytes: z.number(), created_at: z.number() })),
+      safety_copies: z.array(z.object({ filename: z.string(), size_bytes: z.number(), created_at: z.number() })),
     }),
     async handler() {
       const { join } = await import("node:path");
-      const { listBackupFiles } = await import("./backup");
+      const { listBackupFiles, listSafetyCopies } = await import("./backup");
       const DATA_DIR = process.env.DATA_DIR ?? join(process.cwd(), "data");
-      return { ok: true, backups: listBackupFiles(DATA_DIR) };
+      return { ok: true, backups: listBackupFiles(DATA_DIR), safety_copies: listSafetyCopies(DATA_DIR) };
     },
   }),
 
@@ -5151,6 +5152,22 @@ ${args.transcript.slice(0, 15000)}`,
       } catch {
         return { ok: false, filename: "", data_base64: "", size_bytes: 0, error: "Could not read backup file." };
       }
+    },
+  }),
+
+  // TEST-DATA NOTE: restoring a backup replaces the ENTIRE live database,
+  // including all test invoices/bills. This is intentional — a restore is a
+  // point-in-time snapshot. Admin/manager only (not in STAFF_ALLOWED_ACTIONS).
+  restoreDatabase: defineAction({
+    request: z.object({
+      filename: z.string().trim().max(200),
+      // 100MB file cap on the client; ~133MB base64 ceiling on the wire.
+      data_base64: z.string().min(100).max(150_000_000),
+    }),
+    response: z.object({ ok: z.boolean(), error: z.string().optional(), backup_of_current: z.string().optional() }),
+    async handler(_ctx, args) {
+      const { requestRestore } = await import("./restore");
+      return requestRestore(args.data_base64);
     },
   }),
 } satisfies ActionsModule;

@@ -4403,6 +4403,7 @@ function ExportsTab() {
         {downloading === "backup" ? "Preparing…" : "Download Backup"}
       </button>
     </div>
+    <RestoreSection busy={downloading !== null} />
     {(cards.some((c) => c.dated)) ? (
       <section className="analytics-filters" aria-label="Export date range">
         <div className="date-inputs">
@@ -4426,6 +4427,97 @@ function ExportsTab() {
     </div>
     <p className="field-note">Test invoices (1001–1010) and test bills are excluded from exports.</p>
   </>;
+}
+
+function RestoreSection({ busy }: { busy: boolean }) {
+  const [file, setFile] = useState<File | null>(null);
+  const [confirmed, setConfirmed] = useState(false);
+  const [restoring, setRestoring] = useState(false);
+  const [done, setDone] = useState(false);
+  const [error, setError] = useState("");
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const MAX_BYTES = 100 * 1024 * 1024;
+
+  const pickFile = (f: File | null) => {
+    setFile(f); setConfirmed(false); setError(""); setDone(false);
+    if (f && f.size > MAX_BYTES) {
+      setError(`That file is ${(f.size / 1048576).toFixed(0)} MB — the limit is 100 MB.`);
+      setFile(null);
+    }
+  };
+
+  const readAsBase64 = (f: File): Promise<string> => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = String(reader.result ?? "");
+      const comma = dataUrl.indexOf(",");
+      resolve(comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl);
+    };
+    reader.onerror = () => reject(new Error("read failed"));
+    reader.readAsDataURL(f);
+  });
+
+  const doRestore = async () => {
+    if (!file || !confirmed || restoring) return;
+    setRestoring(true); setError("");
+    try {
+      const data_base64 = await readAsBase64(file);
+      const result = await api.restoreDatabase({ filename: file.name, data_base64 });
+      if (!result.ok) { setError(result.error ?? "Restore failed. Nothing was changed."); setRestoring(false); return; }
+      setDone(true);
+      // The server is restarting with the restored database — reload shortly.
+      setTimeout(() => window.location.reload(), 10000);
+    } catch {
+      setError("Restore failed. Check your connection and try again — nothing was changed.");
+      setRestoring(false);
+    }
+  };
+
+  if (done) {
+    return (
+      <section className="export-card export-restore" aria-label="Restore from backup">
+        <span className="customer-copy">
+          <strong>Restoring…</strong>
+          <small>The app is restarting with your restored data. This page will reload in a moment.</small>
+        </span>
+      </section>
+    );
+  }
+
+  return (
+    <section className="export-card export-restore" aria-label="Restore from backup">
+      <span className="customer-copy">
+        <strong>Restore from Backup</strong>
+        <small>Replace the entire database with a backup file. A safety copy of your current data is saved automatically first.</small>
+      </span>
+      <div className="restore-controls">
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".db,application/x-sqlite3"
+          style={{ display: "none" }}
+          onChange={(e) => pickFile(e.target.files?.[0] ?? null)}
+        />
+        <button type="button" className="secondary-button" disabled={busy || restoring} onClick={() => fileInputRef.current?.click()}>
+          {file ? "Change file" : "Choose backup file"}
+        </button>
+        {file ? <span className="restore-filename">{file.name}<small> · {(file.size / 1048576).toFixed(1)} MB</small></span> : null}
+      </div>
+      {file ? (
+        <label className="restore-confirm">
+          <input type="checkbox" checked={confirmed} disabled={restoring} onChange={(e) => setConfirmed(e.target.checked)} />
+          <span>I understand this will replace <strong>all</strong> current data with the backup.</span>
+        </label>
+      ) : null}
+      {error ? <p className="field-error">{error}</p> : null}
+      {file ? (
+        <button type="button" className="danger-button" disabled={busy || restoring || !confirmed} onClick={() => void doRestore()}>
+          {restoring ? "Restoring…" : "Restore Database"}
+        </button>
+      ) : null}
+    </section>
+  );
 }
 
 function AutoBackupSection({ downloading }: { downloading: boolean }) {
@@ -4497,6 +4589,19 @@ function AutoBackupSection({ downloading }: { downloading: boolean }) {
             </li>
           ))}
         </ul>
+      ) : null}
+      {backups.data && backups.data.safety_copies.length > 0 ? (
+        <>
+          <p className="field-note" style={{ marginTop: 8 }}>Safety copies — saved automatically before each restore. Download one, then use Restore from Backup to roll back.</p>
+          <ul className="auto-backup-list">
+            {backups.data.safety_copies.map((b) => (
+              <li key={b.filename}>
+                <span>{b.filename.replace("pre-restore-", "").replace(".db", "")}<small> · {fmtSize(b.size_bytes)}</small></span>
+                <button type="button" className="secondary-button" disabled={downloading} onClick={() => void downloadOne(b.filename)}>Download</button>
+              </li>
+            ))}
+          </ul>
+        </>
       ) : null}
     </section>
   );
