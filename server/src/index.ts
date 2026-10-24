@@ -201,6 +201,40 @@ app.get("/api/blobs/:key", (req, res) => {
   res.sendFile(resolve(path));
 });
 
+// ---- Public SMS opt-in proof page (Twilio A2P campaign evidence) ----
+// Deliberately NO sign-in check: carriers and Twilio reviewers must be
+// able to open this logged-out. Static copy only; no business logic.
+app.get("/sms-opt-in", (_req, res) => {
+  res.type("html").send(`<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RIMA Supply Co — Text Message Opt-In</title>
+<style>
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: #1a1a1a; line-height: 1.6; margin: 0; padding: 0; background: #fff; }
+main { max-width: 640px; margin: 0 auto; padding: 48px 24px; }
+h1 { font-size: 1.6rem; margin-bottom: 0.25rem; }
+.sub { color: #555; margin-top: 0; }
+blockquote { border-left: 4px solid #c00; margin: 1.5rem 0; padding: 0.5rem 1rem; background: #fafafa; }
+a { color: #0645ad; }
+</style>
+</head>
+<body>
+<main>
+<h1>RIMA Supply Co — Text Message Opt-In</h1>
+<p class="sub">1 Dunnell Lane, Pawtucket, RI</p>
+<p>RIMA Supply Co (1 Dunnell Lane, Pawtucket, RI) sends transactional texts about your order — confirmations, ready-for-pickup, and delivery updates — only after you opt in.</p>
+<p><strong>In store or by phone, our staff read this script:</strong></p>
+<blockquote>"Would you like us to text you updates about your order at this number? Message and data rates may apply, message frequency varies, and you can reply STOP at any time to opt out."</blockquote>
+<p>We only text customers who say yes.</p>
+<p><strong>Or you can text us first</strong> at (401) 373-9126 — texting us first is your consent to a reply about your order.</p>
+<p>Message and data rates may apply. Message frequency varies. Reply STOP to opt out, HELP for help. Numbers are never shared or sold. Privacy Policy: <a href="https://rimasupply.com/policies/privacy-policy">https://rimasupply.com/policies/privacy-policy</a> · Terms: <a href="https://rimasupply.com/policies/terms-of-service">https://rimasupply.com/policies/terms-of-service</a></p>
+</main>
+</body>
+</html>`);
+});
+
 // ---- Health check (for Railway) ----
 app.get("/api/health", (_req, res) => res.json({ ok: true, time: new Date().toISOString() }));
 
