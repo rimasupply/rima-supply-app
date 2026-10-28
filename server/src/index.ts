@@ -15,6 +15,8 @@ import { Actions } from "./actions";
 import { authActions, ensureSeedAdmin, isActionAllowed } from "./auth";
 import { blobPathForKey, createBlobs } from "./blobs";
 import { runMigrations } from "./migrate";
+import { sheetsSearchHandler } from "./sheets";
+import { voiceCatalogHandler, voiceWebhookHandler } from "./voice";
 import { setRestoreContext } from "./restore";
 import { anthropicComplete, wrapDb, type AuthUser, type Ctx, type Db } from "./sdk-compat";
 
@@ -97,6 +99,10 @@ setRestoreContext({ sqlite, dbPath: DB_PATH, dataDir: DATA_DIR });
 // ---- App ----
 const app = express();
 app.set("trust proxy", 1);
+// Voice webhook: the raw body must reach the handler untouched for
+// signature verification, so capture it BEFORE express.json() parses
+// anything. Path-scoped — no other route is affected.
+app.use("/webhooks/openai-call-incoming", express.raw({ type: "*/*", limit: "1mb" }));
 // Raised to allow full database backup uploads for restore (client caps at 100MB).
 app.use(express.json({ limit: "150mb" }));
 
@@ -200,6 +206,13 @@ app.get("/api/blobs/:key", (req, res) => {
   }
   res.sendFile(resolve(path));
 });
+
+// ---- Sheets search (Hank retrieval bridge) ----
+app.get("/api/sheets/search", sheetsSearchHandler);
+
+// ---- Voice receiver (OpenAI Realtime SIP calls for Anya + Hank) ----
+app.post("/webhooks/openai-call-incoming", voiceWebhookHandler);
+app.get("/api/voice/catalog", voiceCatalogHandler);
 
 // ---- Public SMS opt-in proof page (Twilio A2P campaign evidence) ----
 // Deliberately NO sign-in check: carriers and Twilio reviewers must be

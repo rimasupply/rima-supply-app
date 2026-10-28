@@ -1,0 +1,554 @@
+{
+ "count": 61,
+ "sheets": [
+  {
+   "code": "CH1050",
+   "type": "SDS",
+   "file": "challenger_ch1050_sds.pdf",
+   "md5": "6c2bfdf9c51c0737f396703e1b7ba2ac",
+   "bytes": 161265,
+   "name": "National Rule Basecoat Metallic Effect Additive",
+   "txt": "challenger_ch1050_sds.txt"
+  },
+  {
+   "code": "CH1056",
+   "type": "SDS",
+   "file": "challenger_ch1056_sds.pdf",
+   "md5": "1c397fbd6071c371377769e6fd8919f7",
+   "bytes": 161143,
+   "name": "National Rule Basecoat Blending Additive",
+   "txt": "challenger_ch1056_sds.txt"
+  },
+  {
+   "code": "CH1060",
+   "type": "SDS",
+   "file": "challenger_ch1060_sds.pdf",
+   "md5": "655c0374f75ce91a9ddd02d960b2c567",
+   "bytes": 158776,
+   "name": "National Rule Basecoat Basecoat Additive",
+   "txt": "challenger_ch1060_sds.txt"
+  },
+  {
+   "code": "CH40651",
+   "type": "SDS",
+   "file": "challenger_ch40651_sds.pdf",
+   "md5": "50921ad25463771c61a7d42f31f4bdbc",
+   "bytes": 148762,
+   "name": "Solvent Reducer Fast",
+   "txt": "challenger_ch40651_sds.txt"
+  },
+  {
+   "code": "CH40751",
+   "type": "SDS",
+   "file": "challenger_ch40751_sds.pdf",
+   "md5": "596d3dd2425626b1f34656d5696047b8",
+   "bytes": 152177,
+   "name": "Solvent Reducer Medium",
+   "txt": "challenger_ch40751_sds.txt"
+  },
+  {
+   "code": "CH40851",
+   "type": "SDS",
+   "file": "challenger_ch40851_sds.pdf",
+   "md5": "76a12aae408ed9c72b00cef9ea6041cb",
+   "bytes": 151520,
+   "name": "Solvent Reducer Slow",
+   "txt": "challenger_ch40851_sds.txt"
+  },
+  {
+   "code": "CH5001001",
+   "type": "SDS",
+   "file": "challenger_ch5001001_sds.pdf",
+   "md5": "eeac6f0a3d59ef1f417416ee09041e28",
+   "bytes": 161439,
+   "name": "National Rule Basecoat Fine Metallic Silver",
+   "txt": "challenger_ch5001001_sds.txt"
+  },
+  {
+   "code": "CH5001001",
+   "type": "Technical bulletin",
+   "file": "challenger_ch5001001_technical_bulletin.pdf",
+   "md5": "9be149f4ecc15bec139aad0c8267368d",
+   "bytes": 255596,
+   "name": "Challenger National Rule Basecoat - Technical Bulletin",
+   "txt": "challenger_ch5001001_technical_bulletin.txt"
+  },
+  {
+   "code": "CH5002",
+   "type": "SDS",
+   "file": "challenger_ch5002_sds.pdf",
+   "md5": "86caa830dacd16f780e5ea3e22a7b6d8",
+   "bytes": 162259,
+   "name": "National Rule Basecoat Medium Metallic Silver",
+   "txt": "challenger_ch5002_sds.txt"
+  },
+  {
+   "code": "CH5003",
+   "type": "SDS",
+   "file": "challenger_ch5003_sds.pdf",
+   "md5": "a59812d20aec8c83288a2d3cc0dbbadf",
+   "bytes": 161543,
+   "name": "National Rule Basecoat Coarse Metallic Silver",
+   "txt": "challenger_ch5003_sds.txt"
+  },
+  {
+   "code": "CH5004",
+   "type": "SDS",
+   "file": "challenger_ch5004_sds.pdf",
+   "md5": "3751b2c4762dc5f50b7a7a78e3c1260a",
+   "bytes": 161718,
+   "name": "National Rule Basecoat Semi-Coarse Metallic Silver",
+   "txt": "challenger_ch5004_sds.txt"
+  },
+  {
+   "code": "CH5005001",
+   "type": "SDS",
+   "file": "challenger_ch5005001_sds.pdf",
+   "md5": "598caba87bf816eb0ccc5195e8cd59bd",
+   "bytes": 162208,
+   "name": "National Rule Basecoat Medium Metallic Silver",
+   "txt": "challenger_ch5005001_sds.txt"
+  },
+  {
+   "code": "CH5006",
+   "type": "SDS",
+   "file": "challenger_ch5006_sds.pdf",
+   "md5": "c58c9e5160553a3f6e1ba4291c8ead1b",
+   "bytes": 161543,
+   "name": "National Rule Basecoat Fine Shimmer Metallic Silver",
+   "txt": "challenger_ch5006_sds.txt"
+  },
+  {
+   "code": "CH5061",
+   "type": "SDS",
+   "file": "challenger_ch5061_sds.pdf",
+   "md5": "c1ff5c1eb82f395d348d41654a615ca0",
+   "bytes": 161590,
+   "name": "National Rule Basecoat Brilliant Orange Pearl",
+   "txt": "challenger_ch5061_sds.txt"
+  },
+  {
+   "code": "CH5062001",
+   "type": "SDS",
+   "file": "challenger_ch5062001_sds.pdf",
+   "md5": "091c302c300a6106c23d0b876f63d089",
+   "bytes": 161170,
+   "name": "National Rule Basecoat Brown Pearl",
+   "txt": "challenger_ch5062001_sds.txt"
+  },
+  {
+   "code": "CH5063001",
+   "type": "SDS",
+   "file": "challenger_ch5063001_sds.pdf",
+   "md5": "a815d425e55256917633b3a53610e5ba",
+   "bytes": 161232,
+   "name": "National Rule Basecoat Dark Red Pearl",
+   "txt": "challenger_ch5063001_sds.txt"
+  },
+  {
+   "code": "CH5064001",
+   "type": "SDS",
+   "file": "challenger_ch5064001_sds.pdf",
+   "md5": "f166829339baba498d5ae74f6547949e",
+   "bytes": 161424,
+   "name": "National Rule Basecoat Emerald Green Pearl",
+   "txt": "challenger_ch5064001_sds.txt"
+  },
+  {
+   "code": "CH5065001",
+   "type": "SDS",
+   "file": "challenger_ch5065001_sds.pdf",
+   "md5": "9194935357777b68caa3f91a5ef3419b",
+   "bytes": 162002,
+   "name": "National Rule Basecoat Golden Pearl",
+   "txt": "challenger_ch5065001_sds.txt"
+  },
+  {
+   "code": "CH5067001",
+   "type": "SDS",
+   "file": "challenger_ch5067001_sds.pdf",
+   "md5": "579eb0d4a83797ac150fcc4905ac2807",
+   "bytes": 161354,
+   "name": "National Rule Basecoat Lavendar Pearl",
+   "txt": "challenger_ch5067001_sds.txt"
+  },
+  {
+   "code": "CH5068001",
+   "type": "SDS",
+   "file": "challenger_ch5068001_sds.pdf",
+   "md5": "b11e188d2fafa60b32ff931bae694393",
+   "bytes": 161902,
+   "name": "National Rule Basecoat Medium Blue Pearl",
+   "txt": "challenger_ch5068001_sds.txt"
+  },
+  {
+   "code": "CH5069001",
+   "type": "SDS",
+   "file": "challenger_ch5069001_sds.pdf",
+   "md5": "a6704c5dd0cc166864208e85b4556d4d",
+   "bytes": 162041,
+   "name": "National Rule Basecoat Medium White Pearl",
+   "txt": "challenger_ch5069001_sds.txt"
+  },
+  {
+   "code": "CH5070",
+   "type": "SDS",
+   "file": "challenger_ch5070_sds.pdf",
+   "md5": "f4a39b2382939c4c95f11a6d2c5d96e0",
+   "bytes": 161162,
+   "name": "National Rule Basecoat Red Pearl",
+   "txt": "challenger_ch5070_sds.txt"
+  },
+  {
+   "code": "CH5071001",
+   "type": "SDS",
+   "file": "challenger_ch5071001_sds.pdf",
+   "md5": "0f643ea371d05134411f2c8c780e38a8",
+   "bytes": 161174,
+   "name": "National Rule Basecoat Red Shimmer Pearl",
+   "txt": "challenger_ch5071001_sds.txt"
+  },
+  {
+   "code": "CH5072001",
+   "type": "SDS",
+   "file": "challenger_ch5072001_sds.pdf",
+   "md5": "c5b1ecd3c33cd2d45dced3349241ee9d",
+   "bytes": 162052,
+   "name": "National Rule Basecoat Sea Green Pearl",
+   "txt": "challenger_ch5072001_sds.txt"
+  },
+  {
+   "code": "CH6100HL",
+   "type": "TDS",
+   "file": "CHG-CH6100HL_TDS.pdf",
+   "md5": "779f3ed2c00533a251f0ad764902c932",
+   "bytes": 173360,
+   "name": "Challenger National Rule Basecoat - Technical Data Sheet",
+   "txt": "CHG-CH6100HL_TDS.txt"
+  },
+  {
+   "code": "CH6101001",
+   "type": "SDS",
+   "file": "challenger_ch6101001_sds.pdf",
+   "md5": "2dca3a601d191fcc3cb527b6dc55a708",
+   "bytes": 160830,
+   "name": "National Rule Basecoat Amber Yellow",
+   "txt": "challenger_ch6101001_sds.txt"
+  },
+  {
+   "code": "CH6103",
+   "type": "SDS",
+   "file": "challenger_ch6103_sds.pdf",
+   "md5": "fc370817b9ab675f4777c7bc6ad9149f",
+   "bytes": 161807,
+   "name": "National Rule Basecoat Black",
+   "txt": "challenger_ch6103_sds.txt"
+  },
+  {
+   "code": "CH6104001",
+   "type": "SDS",
+   "file": "challenger_ch6104001_sds.pdf",
+   "md5": "1b17c2a41a3d515a037b4ee06b5253c5",
+   "bytes": 153196,
+   "name": "Challenger CH6104 Black",
+   "txt": "challenger_ch6104001_sds.txt"
+  },
+  {
+   "code": "CH6105001",
+   "type": "SDS",
+   "file": "challenger_ch6105001_sds.pdf",
+   "md5": "ca8b84f4387ddcc0b27fa61e2b1a04b2",
+   "bytes": 161148,
+   "name": "National Rule Basecoat Bright Green",
+   "txt": "challenger_ch6105001_sds.txt"
+  },
+  {
+   "code": "CH6106001",
+   "type": "SDS",
+   "file": "challenger_ch6106001_sds.pdf",
+   "md5": "ae2ceb2be0e76fef9f1557c6708375f6",
+   "bytes": 158877,
+   "name": "National Rule Basecoat Claret Red",
+   "txt": "challenger_ch6106001_sds.txt"
+  },
+  {
+   "code": "CH6107001",
+   "type": "SDS",
+   "file": "challenger_ch6107001_sds.pdf",
+   "md5": "33f428ec7603e284ef83320796e99946",
+   "bytes": 161096,
+   "name": "National Rule Basecoat Cobalt Blue",
+   "txt": "challenger_ch6107001_sds.txt"
+  },
+  {
+   "code": "CH6108001",
+   "type": "SDS",
+   "file": "challenger_ch6108001_sds.pdf",
+   "md5": "d872dc9645b5497428d433e440be00a5",
+   "bytes": 161197,
+   "name": "National Rule Basecoat Dark Violet",
+   "txt": "challenger_ch6108001_sds.txt"
+  },
+  {
+   "code": "CH6109",
+   "type": "SDS",
+   "file": "challenger_ch6109_sds.pdf",
+   "md5": "2d170f754c5085ebf3b733dbb2b06f98",
+   "bytes": 150507,
+   "name": "National Rule Basecoat Deep Black",
+   "txt": "challenger_ch6109_sds.txt"
+  },
+  {
+   "code": "CH6110001",
+   "type": "SDS",
+   "file": "challenger_ch6110001_sds.pdf",
+   "md5": "0a24d3a01af7b6b04076f092c8ccd77e",
+   "bytes": 161117,
+   "name": "National Rule Basecoat Deep Plum",
+   "txt": "challenger_ch6110001_sds.txt"
+  },
+  {
+   "code": "CH6111001",
+   "type": "SDS",
+   "file": "challenger_ch6111001_sds.pdf",
+   "md5": "a5b7437fa04e66d523d26a5a566c6971",
+   "bytes": 161355,
+   "name": "National Rule Basecoat Golden Yellow",
+   "txt": "challenger_ch6111001_sds.txt"
+  },
+  {
+   "code": "CH6112001",
+   "type": "SDS",
+   "file": "challenger_ch6112001_sds.pdf",
+   "md5": "ae911994402b9a0515bf12910d4d3686",
+   "bytes": 161469,
+   "name": "National Rule Basecoat Intense Yellow",
+   "txt": "challenger_ch6112001_sds.txt"
+  },
+  {
+   "code": "CH6113001",
+   "type": "SDS",
+   "file": "challenger_ch6113001_sds.pdf",
+   "md5": "5d40340805d9d4fe444443b76149c993",
+   "bytes": 161106,
+   "name": "National Rule Basecoat Lapis Blue",
+   "txt": "challenger_ch6113001_sds.txt"
+  },
+  {
+   "code": "CH6114001",
+   "type": "SDS",
+   "file": "challenger_ch6114001_sds.pdf",
+   "md5": "4801bf38d4b4644d62ad6f58c70eed46",
+   "bytes": 160942,
+   "name": "National Rule Basecoat Maroon",
+   "txt": "challenger_ch6114001_sds.txt"
+  },
+  {
+   "code": "CH6115001",
+   "type": "SDS",
+   "file": "challenger_ch6115001_sds.pdf",
+   "md5": "7d96ac70906c22cc179828de8e108797",
+   "bytes": 160941,
+   "name": "National Rule Basecoat Ocean Blue",
+   "txt": "challenger_ch6115001_sds.txt"
+  },
+  {
+   "code": "CH6116",
+   "type": "SDS",
+   "file": "challenger_ch6116_sds.pdf",
+   "md5": "4e08064890d35a0313c8ce15724c3366",
+   "bytes": 161238,
+   "name": "Challenger CH6116 HS Red",
+   "txt": "challenger_ch6116_sds.txt"
+  },
+  {
+   "code": "CH6117001",
+   "type": "SDS",
+   "file": "challenger_ch6117001_sds.pdf",
+   "md5": "f1a85eec238012d2a63a2665c36b707a",
+   "bytes": 160974,
+   "name": "National Rule Basecoat Radiant Red",
+   "txt": "challenger_ch6117001_sds.txt"
+  },
+  {
+   "code": "CH6118001",
+   "type": "SDS",
+   "file": "challenger_ch6118001_sds.pdf",
+   "md5": "7f453d12668f9ce3e91d25b6e1ce41f1",
+   "bytes": 158577,
+   "name": "National Rule Basecoat Red",
+   "txt": "challenger_ch6118001_sds.txt"
+  },
+  {
+   "code": "CH6119001",
+   "type": "SDS",
+   "file": "challenger_ch6119001_sds.pdf",
+   "md5": "411e43bd7cc8c7fe7f5e5b2fea22b32a",
+   "bytes": 160909,
+   "name": "National Rule Basecoat Ruby Red",
+   "txt": "challenger_ch6119001_sds.txt"
+  },
+  {
+   "code": "CH6120001",
+   "type": "SDS",
+   "file": "challenger_ch6120001_sds.pdf",
+   "md5": "c19b4350ba3cba3ab3c3b7fea7562f1b",
+   "bytes": 161045,
+   "name": "National Rule Basecoat Rustic Brown",
+   "txt": "challenger_ch6120001_sds.txt"
+  },
+  {
+   "code": "CH6121",
+   "type": "SDS",
+   "file": "challenger_ch6121_sds.pdf",
+   "md5": "176d9fd313eefeef7f6f002f8eb1a127",
+   "bytes": 161424,
+   "name": "National Rule Basecoat Sapphire Blue",
+   "txt": "challenger_ch6121_sds.txt"
+  },
+  {
+   "code": "CH6122001",
+   "type": "SDS",
+   "file": "challenger_ch6122001_sds.pdf",
+   "md5": "da099234bb9971f2aa83c5055484d1b3",
+   "bytes": 161090,
+   "name": "National Rule Basecoat Soft White",
+   "txt": "challenger_ch6122001_sds.txt"
+  },
+  {
+   "code": "CH6123001",
+   "type": "SDS",
+   "file": "challenger_ch6123001_sds.pdf",
+   "md5": "5e04c0227bcdd464b6f711227c430c8d",
+   "bytes": 160986,
+   "name": "National Rule Basecoat Steel Blue",
+   "txt": "challenger_ch6123001_sds.txt"
+  },
+  {
+   "code": "CH6124",
+   "type": "SDS",
+   "file": "challenger_ch6124_sds.pdf",
+   "md5": "480619240d736a3fce89618931fb591f",
+   "bytes": 162336,
+   "name": "National Rule Basecoat Sunburst Orange",
+   "txt": "challenger_ch6124_sds.txt"
+  },
+  {
+   "code": "CH6125",
+   "type": "SDS",
+   "file": "challenger_ch6125_sds.pdf",
+   "md5": "7a90b80dd8fc2bf4b264eb80dd92a229",
+   "bytes": 160669,
+   "name": "Challenger CH6125 Red-Yellow",
+   "txt": "challenger_ch6125_sds.txt"
+  },
+  {
+   "code": "CH6127001",
+   "type": "SDS",
+   "file": "challenger_ch6127001_sds.pdf",
+   "md5": "646e5067464346e458f21f1e6fb4d42c",
+   "bytes": 161234,
+   "name": "National Rule Basecoat Transparent Copper",
+   "txt": "challenger_ch6127001_sds.txt"
+  },
+  {
+   "code": "CH6128001",
+   "type": "SDS",
+   "file": "challenger_ch6128001_sds.pdf",
+   "md5": "51db504e32c7f3c582a8993a89a4561f",
+   "bytes": 159044,
+   "name": "National Rule Basecoat Transparent Red",
+   "txt": "challenger_ch6128001_sds.txt"
+  },
+  {
+   "code": "CH6129001",
+   "type": "SDS",
+   "file": "challenger_ch6129001_sds.pdf",
+   "md5": "b8ed82c2f12f79799713fd746673f5a3",
+   "bytes": 161166,
+   "name": "National Rule Basecoat Transparent Red",
+   "txt": "challenger_ch6129001_sds.txt"
+  },
+  {
+   "code": "CH6130001",
+   "type": "SDS",
+   "file": "challenger_ch6130001_sds.pdf",
+   "md5": "74a73367a38d2af4b0c6aad5ecddf1fd",
+   "bytes": 161293,
+   "name": "National Rule Basecoat Transparent Yellow",
+   "txt": "challenger_ch6130001_sds.txt"
+  },
+  {
+   "code": "CH6131001",
+   "type": "SDS",
+   "file": "challenger_ch6131001_sds.pdf",
+   "md5": "7e27bbea982671a66a460bc004b3356f",
+   "bytes": 160833,
+   "name": "National Rule Basecoat Turquoise",
+   "txt": "challenger_ch6131001_sds.txt"
+  },
+  {
+   "code": "CH6132",
+   "type": "SDS",
+   "file": "challenger_ch6132_sds.pdf",
+   "md5": "11e2af6f113735817346653290ed599d",
+   "bytes": 162012,
+   "name": "National Rule Basecoat White Effect",
+   "txt": "challenger_ch6132_sds.txt"
+  },
+  {
+   "code": "CH6134",
+   "type": "SDS",
+   "file": "challenger_ch6134_sds.pdf",
+   "md5": "e08d13a250055a1adc0e3b2c238fb933",
+   "bytes": 160770,
+   "name": "National Rule Basecoat White",
+   "txt": "challenger_ch6134_sds.txt"
+  },
+  {
+   "code": "CH6135001",
+   "type": "SDS",
+   "file": "challenger_ch6135001_sds.pdf",
+   "md5": "6fe0d39cf61063176656d5cea4a502e4",
+   "bytes": 163110,
+   "name": "National Rule Basecoat Yellow",
+   "txt": "challenger_ch6135001_sds.txt"
+  },
+  {
+   "code": "CH6137001",
+   "type": "SDS",
+   "file": "challenger_ch6137001_sds.pdf",
+   "md5": "932cfd17ac025499e9c98484921291a2",
+   "bytes": 161243,
+   "name": "National Rule Basecoat Yellow Ochre",
+   "txt": "challenger_ch6137001_sds.txt"
+  },
+  {
+   "code": "CH6138",
+   "type": "SDS",
+   "file": "challenger_ch6138_sds.pdf",
+   "md5": "2fef7ec6ec6bcb85d9663e409816cdd9",
+   "bytes": 161268,
+   "name": "National Rule Basecoat Jet Black",
+   "txt": "challenger_ch6138_sds.txt"
+  },
+  {
+   "code": "CH6139001",
+   "type": "SDS",
+   "file": "challenger_ch6139001_sds.pdf",
+   "md5": "963fef0f6d41a68ce367e02852998321",
+   "bytes": 162624,
+   "name": "National Rule Basecoat Indigo Blue",
+   "txt": "challenger_ch6139001_sds.txt"
+  },
+  {
+   "code": "CH6140001",
+   "type": "SDS",
+   "file": "challenger_ch6140001_sds.pdf",
+   "md5": "6dbe823c3390220670ce35de4e2b0e76",
+   "bytes": 161123,
+   "name": "National Rule Basecoat Deep Orange",
+   "txt": "challenger_ch6140001_sds.txt"
+  }
+ ]
+}
