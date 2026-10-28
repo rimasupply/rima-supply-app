@@ -54523,24 +54523,31 @@ function openSideband(callId, seat, apiKey) {
   });
 }
 var seenWebhookIds = new Set;
+var SEAT_SUFFIXES = ["4013739126", "4013365008"];
 function extractToNumber(data) {
-  const candidates = [
-    data.to,
-    data.to_number,
-    data.phone_number,
-    data.sip?.to
-  ];
-  for (const c of candidates) {
-    if (typeof c === "string" && c) {
-      const m = c.match(/(\+?1?\d{10,11})/);
-      if (m)
-        return m[1];
-      return c;
+  const strings = [];
+  const pushStr = (v) => {
+    if (typeof v === "string" && v)
+      strings.push(v);
+  };
+  const pushObjStrings = (o) => {
+    if (o && typeof o === "object" && !Array.isArray(o)) {
+      for (const v of Object.values(o))
+        pushStr(v);
     }
+  };
+  for (const k of ["to", "to_number", "phone_number", "destination", "called_number", "dialed_number"])
+    pushStr(data[k]);
+  pushObjStrings(data.sip);
+  pushObjStrings(data.sip_headers);
+  pushObjStrings(data.call);
+  for (const s of strings) {
+    const d = s.replace(/\D/g, "");
+    if (d && SEAT_SUFFIXES.some((suf) => d.endsWith(suf)))
+      return s;
   }
-  const headers = data.sip_headers;
-  if (headers && typeof headers.To === "string") {
-    const m = headers.To.match(/(\+?1?\d{10,11})/);
+  for (const s of strings) {
+    const m = s.match(/(\+?1?\d{10,11})/);
     if (m)
       return m[1];
   }
@@ -54598,11 +54605,12 @@ async function voiceWebhookHandler(req, res) {
     return;
   }
   const to = extractToNumber(data);
-  const seat = seatForNumber(to);
+  let seat = seatForNumber(to);
   if (!seat) {
-    console.log(`[voice] incoming call ${callId} to unknown number; refusing.`);
-    res.status(400).json({ ok: false, error: "Unknown destination number." });
-    return;
+    const debug = JSON.stringify({ to: data.to, sip: data.sip, sip_headers: data.sip_headers }).slice(0, 500);
+    console.log(`[voice] incoming call ${callId} to unresolvable destination (to=${to ?? "none"}); falling back to Anya (TEMPORARY). Event: ${debug}`);
+    logCallEvent(callId, { type: "routing_fallback_anya", to: to ?? null, debug });
+    seat = "anya";
   }
   const apiKey = process.env.OPENAI_API_KEY ?? "";
   if (!apiKey) {

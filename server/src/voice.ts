@@ -634,24 +634,34 @@ function openSideband(callId: string, seat: Seat, apiKey: string): void {
 
 const seenWebhookIds = new Set<string>();
 
+const SEAT_SUFFIXES = ["4013739126", "4013365008"];
+
 function extractToNumber(data: Record<string, unknown>): string | null {
-  const candidates = [
-    data.to,
-    data.to_number,
-    data.phone_number,
-    (data.sip as Record<string, unknown> | undefined)?.to,
-  ];
-  for (const c of candidates) {
-    if (typeof c === "string" && c) {
-      // SIP To headers look like "sip:+14013739126@sip.provider" — take the number part.
-      const m = c.match(/(\+?1?\d{10,11})/);
-      if (m) return m[1];
-      return c;
+  // Gather every string the event offers about the destination: top-level
+  // fields, the sip object, sip headers (any key casing), and a nested call
+  // object. Trunked calls arrive via sip:<project>@sip.api.openai.com, so the
+  // dialed PSTN number is often NOT in `to` at all — it may hide in a header
+  // or be absent entirely (the handler falls back to Anya below).
+  const strings: string[] = [];
+  const pushStr = (v: unknown): void => { if (typeof v === "string" && v) strings.push(v); };
+  const pushObjStrings = (o: unknown): void => {
+    if (o && typeof o === "object" && !Array.isArray(o)) {
+      for (const v of Object.values(o as Record<string, unknown>)) pushStr(v);
     }
+  };
+  for (const k of ["to", "to_number", "phone_number", "destination", "called_number", "dialed_number"]) pushStr(data[k]);
+  pushObjStrings(data.sip);
+  pushObjStrings(data.sip_headers);
+  pushObjStrings(data.call);
+  // A seat number anywhere in the event wins. The caller number can never
+  // match a seat suffix, so this cannot misroute a caller to the wrong seat.
+  for (const s of strings) {
+    const d = s.replace(/\D/g, "");
+    if (d && SEAT_SUFFIXES.some((suf) => d.endsWith(suf))) return s;
   }
-  const headers = data.sip_headers as Record<string, unknown> | undefined;
-  if (headers && typeof headers.To === "string") {
-    const m = (headers.To as string).match(/(\+?1?\d{10,11})/);
+  // Legacy fallback: first plausible +1 number, for older event shapes.
+  for (const s of strings) {
+    const m = s.match(/(\+?1?\d{10,11})/);
     if (m) return m[1];
   }
   return null;
@@ -710,11 +720,17 @@ export async function voiceWebhookHandler(req: Request, res: Response): Promise<
     return;
   }
   const to = extractToNumber(data);
-  const seat = seatForNumber(to);
+  let seat = seatForNumber(to);
   if (!seat) {
-    console.log(`[voice] incoming call ${callId} to unknown number; refusing.`);
-    res.status(400).json({ ok: false, error: "Unknown destination number." });
-    return;
+    // TEMPORARY fallback (Oct 28): trunked SIP calls report the project URI
+    // as To, not the dialed number, so the destination is often unresolvable.
+    // Anya is the only live seat, so an unresolvable call on this webhook can
+    // only be a test or wrong-number call to her line. Log loudly and REMOVE
+    // before Hank goes live, when routing must use the dialed number.
+    const debug = JSON.stringify({ to: data.to, sip: data.sip, sip_headers: data.sip_headers }).slice(0, 500);
+    console.log(`[voice] incoming call ${callId} to unresolvable destination (to=${to ?? "none"}); falling back to Anya (TEMPORARY). Event: ${debug}`);
+    logCallEvent(callId, { type: "routing_fallback_anya", to: to ?? null, debug });
+    seat = "anya";
   }
   const apiKey = process.env.OPENAI_API_KEY ?? "";
   if (!apiKey) {
