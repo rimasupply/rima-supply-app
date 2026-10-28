@@ -564,68 +564,111 @@ async function dispatchTool(seat: Seat, callId: string, name: string, args: Reco
 /* Sideband WebSocket (Bun built-in client)                            */
 /* ------------------------------------------------------------------ */
 
+const SEAT_GREETING: Record<string, string> = {
+  anya: "Rima Supply, this is Anya, RIMA's digital assistant, how can I help you?",
+  hank: "Hank at RIMA Supply here, what can I help you with? I'm a digital assistant, but I'm trained on all of our products — shoot a question and I'll do my best to help you.",
+};
+
 function openSideband(callId: string, seat: Seat, apiKey: string): void {
   const url = `wss://api.openai.com/v1/realtime?call_id=${encodeURIComponent(callId)}`;
-  let ws: WebSocket;
-  try {
-    ws = new WebSocket(url, { headers: { Authorization: `Bearer ${apiKey}`, "OpenAI-Beta": "realtime=v1" } } as never);
-  } catch (err) {
-    console.error("[voice] sideband open failed:", err);
-    logCallEvent(callId, { type: "sideband_error", seat, error: String(err) });
-    return;
-  }
-  ws.addEventListener("open", () => {
-    console.log(`[voice] sideband open for call ${callId} (${seat})`);
-    logCallEvent(callId, { type: "sideband_open", seat });
-  });
-  ws.addEventListener("message", (ev) => {
-    void (async () => {
-      let data: Record<string, unknown>;
+  const greeting = SEAT_GREETING[seat] ?? "";
+  // Twilio's official guide for this exact stack sends an Origin header and
+  // retries the attach on 404/1006: the attach can race session creation,
+  // and a single failed attempt used to leave the call with no control
+  // channel and no greeting.
+  const maxAttempts = 6;
+  const delaysMs = [0, 1000, 2000, 4000, 8000];
+  let attempt = 0;
+  let opened = false;
+  let retryPending = false;
+  const scheduleRetry = (): void => {
+    if (opened || retryPending) return;
+    if (attempt >= maxAttempts) {
+      console.error(`[voice] sideband gave up for call ${callId} after ${attempt} attempts`);
+      logCallEvent(callId, { type: "sideband_gave_up", seat, attempts: attempt });
+      return;
+    }
+    retryPending = true;
+    const delay = delaysMs[Math.min(attempt, delaysMs.length - 1)];
+    setTimeout(() => { retryPending = false; connect(); }, delay);
+  };
+  const connect = (): void => {
+    attempt += 1;
+    let ws: WebSocket;
+    try {
+      ws = new WebSocket(url, { headers: { Authorization: `Bearer ${apiKey}`, origin: "https://api.openai.com" } } as never);
+    } catch (err) {
+      console.error(`[voice] sideband open failed (attempt ${attempt}):`, err);
+      logCallEvent(callId, { type: "sideband_error", seat, attempt, error: String(err) });
+      scheduleRetry();
+      return;
+    }
+    ws.addEventListener("open", () => {
+      opened = true;
+      console.log(`[voice] sideband open for call ${callId} (${seat}, attempt ${attempt})`);
+      logCallEvent(callId, { type: "sideband_open", seat, attempt });
+      // Make the agent speak first with its scripted greeting.
       try {
-        data = JSON.parse(String((ev as MessageEvent).data)) as Record<string, unknown>;
-      } catch {
-        return;
+        ws.send(JSON.stringify({ type: "response.create", response: { instructions: `Say to the caller: ${greeting}` } }));
+      } catch (err) {
+        console.error("[voice] greeting send failed:", err);
       }
-      const type = String(data.type ?? "");
-      if (type === "response.function_call_arguments.done") {
-        const callIdArg = String(data.call_id ?? "");
-        const fnName = String(data.name ?? "");
-        let fnArgs: Record<string, unknown> = {};
+    });
+    ws.addEventListener("message", (ev) => {
+      void (async () => {
+        let data: Record<string, unknown>;
         try {
-          fnArgs = JSON.parse(String(data.arguments ?? "{}")) as Record<string, unknown>;
+          data = JSON.parse(String((ev as MessageEvent).data)) as Record<string, unknown>;
         } catch {
-          fnArgs = {};
+          return;
         }
-        const output = await dispatchTool(seat, callId, fnName, fnArgs);
-        try {
-          ws.send(JSON.stringify({
-            type: "conversation.item.create",
-            item: { type: "function_call_output", call_id: callIdArg, output },
-          }));
-          ws.send(JSON.stringify({ type: "response.create" }));
-        } catch (err) {
-          console.error("[voice] sideband send failed:", err);
+        const type = String(data.type ?? "");
+        if (type === "response.function_call_arguments.done") {
+          const callIdArg = String(data.call_id ?? "");
+          const fnName = String(data.name ?? "");
+          let fnArgs: Record<string, unknown> = {};
+          try {
+            fnArgs = JSON.parse(String(data.arguments ?? "{}")) as Record<string, unknown>;
+          } catch {
+            fnArgs = {};
+          }
+          const output = await dispatchTool(seat, callId, fnName, fnArgs);
+          try {
+            ws.send(JSON.stringify({
+              type: "conversation.item.create",
+              item: { type: "function_call_output", call_id: callIdArg, output },
+            }));
+            ws.send(JSON.stringify({ type: "response.create" }));
+          } catch (err) {
+            console.error("[voice] sideband send failed:", err);
+          }
+          return;
         }
-        return;
+        // Transcript capture: keep the text-bearing events, drop the rest.
+        if (type.includes("transcript") || type === "response.output_text.done" || type === "conversation.item.created") {
+          logCallEvent(callId, { type: "session_event", seat, event_type: type, item: data.item ?? null, text: data.text ?? data.transcript ?? null });
+        }
+        if (type === "realtime.call.ended" || type === "session.ended") {
+          logCallEvent(callId, { type: "call_end", seat, event_type: type });
+          try { ws.close(); } catch { /* already closed */ }
+        }
+      })();
+    });
+    ws.addEventListener("close", () => {
+      if (opened) {
+        console.log(`[voice] sideband closed for call ${callId} (${seat})`);
+        logCallEvent(callId, { type: "call_end", seat, reason: "sideband_closed" });
+      } else {
+        scheduleRetry();
       }
-      // Transcript capture: keep the text-bearing events, drop the rest.
-      if (type.includes("transcript") || type === "response.output_text.done" || type === "conversation.item.created") {
-        logCallEvent(callId, { type: "session_event", seat, event_type: type, item: data.item ?? null, text: data.text ?? data.transcript ?? null });
-      }
-      if (type === "realtime.call.ended" || type === "session.ended") {
-        logCallEvent(callId, { type: "call_end", seat, event_type: type });
-        try { ws.close(); } catch { /* already closed */ }
-      }
-    })();
-  });
-  ws.addEventListener("close", () => {
-    console.log(`[voice] sideband closed for call ${callId} (${seat})`);
-    logCallEvent(callId, { type: "call_end", seat, reason: "sideband_closed" });
-  });
-  ws.addEventListener("error", (ev) => {
-    console.error(`[voice] sideband error for call ${callId}:`, ev);
-    logCallEvent(callId, { type: "sideband_error", seat });
-  });
+    });
+    ws.addEventListener("error", (ev) => {
+      console.error(`[voice] sideband error for call ${callId}:`, ev);
+      logCallEvent(callId, { type: "sideband_error", seat, attempt });
+      if (!opened) scheduleRetry();
+    });
+  };
+  connect();
 }
 
 /* ------------------------------------------------------------------ */
@@ -753,6 +796,8 @@ export async function voiceWebhookHandler(req: Request, res: Response): Promise<
       res.status(502).json({ ok: false, error: "Call accept failed." });
       return;
     }
+    const acceptBody = await acceptRes.text().catch(() => "");
+    console.log(`[voice] accept response for call ${callId}: ${acceptRes.status} ${acceptBody.slice(0, 300)}`);
   } catch (err) {
     console.error(`[voice] accept error for call ${callId}:`, err);
     res.status(502).json({ ok: false, error: "Call accept failed." });
@@ -763,5 +808,8 @@ export async function voiceWebhookHandler(req: Request, res: Response): Promise<
   // Sideband is fire-and-forget: the call is live once we answer 200,
   // and a slow socket open must not hold the webhook response up.
   openSideband(callId, seat, apiKey);
+  // Twilio's official guide for this stack sets an Authorization header on
+  // the webhook response; match it.
+  res.set("Authorization", `Bearer ${apiKey}`);
   res.json({ ok: true, call_id: callId, seat });
 }

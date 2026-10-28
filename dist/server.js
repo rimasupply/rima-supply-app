@@ -54458,69 +54458,111 @@ async function dispatchTool(seat, callId, name, args) {
       return JSON.stringify({ error: `Unknown tool: ${name}` });
   }
 }
+var SEAT_GREETING = {
+  anya: "Rima Supply, this is Anya, RIMA's digital assistant, how can I help you?",
+  hank: "Hank at RIMA Supply here, what can I help you with? I'm a digital assistant, but I'm trained on all of our products \u2014 shoot a question and I'll do my best to help you."
+};
 function openSideband(callId, seat, apiKey) {
   const url = `wss://api.openai.com/v1/realtime?call_id=${encodeURIComponent(callId)}`;
-  let ws;
-  try {
-    ws = new WebSocket(url, { headers: { Authorization: `Bearer ${apiKey}`, "OpenAI-Beta": "realtime=v1" } });
-  } catch (err) {
-    console.error("[voice] sideband open failed:", err);
-    logCallEvent(callId, { type: "sideband_error", seat, error: String(err) });
-    return;
-  }
-  ws.addEventListener("open", () => {
-    console.log(`[voice] sideband open for call ${callId} (${seat})`);
-    logCallEvent(callId, { type: "sideband_open", seat });
-  });
-  ws.addEventListener("message", (ev) => {
-    (async () => {
-      let data;
+  const greeting = SEAT_GREETING[seat] ?? "";
+  const maxAttempts = 6;
+  const delaysMs = [0, 1000, 2000, 4000, 8000];
+  let attempt = 0;
+  let opened = false;
+  let retryPending = false;
+  const scheduleRetry = () => {
+    if (opened || retryPending)
+      return;
+    if (attempt >= maxAttempts) {
+      console.error(`[voice] sideband gave up for call ${callId} after ${attempt} attempts`);
+      logCallEvent(callId, { type: "sideband_gave_up", seat, attempts: attempt });
+      return;
+    }
+    retryPending = true;
+    const delay = delaysMs[Math.min(attempt, delaysMs.length - 1)];
+    setTimeout(() => {
+      retryPending = false;
+      connect();
+    }, delay);
+  };
+  const connect = () => {
+    attempt += 1;
+    let ws;
+    try {
+      ws = new WebSocket(url, { headers: { Authorization: `Bearer ${apiKey}`, origin: "https://api.openai.com" } });
+    } catch (err) {
+      console.error(`[voice] sideband open failed (attempt ${attempt}):`, err);
+      logCallEvent(callId, { type: "sideband_error", seat, attempt, error: String(err) });
+      scheduleRetry();
+      return;
+    }
+    ws.addEventListener("open", () => {
+      opened = true;
+      console.log(`[voice] sideband open for call ${callId} (${seat}, attempt ${attempt})`);
+      logCallEvent(callId, { type: "sideband_open", seat, attempt });
       try {
-        data = JSON.parse(String(ev.data));
-      } catch {
-        return;
+        ws.send(JSON.stringify({ type: "response.create", response: { instructions: `Say to the caller: ${greeting}` } }));
+      } catch (err) {
+        console.error("[voice] greeting send failed:", err);
       }
-      const type = String(data.type ?? "");
-      if (type === "response.function_call_arguments.done") {
-        const callIdArg = String(data.call_id ?? "");
-        const fnName = String(data.name ?? "");
-        let fnArgs = {};
+    });
+    ws.addEventListener("message", (ev) => {
+      (async () => {
+        let data;
         try {
-          fnArgs = JSON.parse(String(data.arguments ?? "{}"));
+          data = JSON.parse(String(ev.data));
         } catch {
-          fnArgs = {};
+          return;
         }
-        const output = await dispatchTool(seat, callId, fnName, fnArgs);
-        try {
-          ws.send(JSON.stringify({
-            type: "conversation.item.create",
-            item: { type: "function_call_output", call_id: callIdArg, output }
-          }));
-          ws.send(JSON.stringify({ type: "response.create" }));
-        } catch (err) {
-          console.error("[voice] sideband send failed:", err);
+        const type = String(data.type ?? "");
+        if (type === "response.function_call_arguments.done") {
+          const callIdArg = String(data.call_id ?? "");
+          const fnName = String(data.name ?? "");
+          let fnArgs = {};
+          try {
+            fnArgs = JSON.parse(String(data.arguments ?? "{}"));
+          } catch {
+            fnArgs = {};
+          }
+          const output = await dispatchTool(seat, callId, fnName, fnArgs);
+          try {
+            ws.send(JSON.stringify({
+              type: "conversation.item.create",
+              item: { type: "function_call_output", call_id: callIdArg, output }
+            }));
+            ws.send(JSON.stringify({ type: "response.create" }));
+          } catch (err) {
+            console.error("[voice] sideband send failed:", err);
+          }
+          return;
         }
-        return;
+        if (type.includes("transcript") || type === "response.output_text.done" || type === "conversation.item.created") {
+          logCallEvent(callId, { type: "session_event", seat, event_type: type, item: data.item ?? null, text: data.text ?? data.transcript ?? null });
+        }
+        if (type === "realtime.call.ended" || type === "session.ended") {
+          logCallEvent(callId, { type: "call_end", seat, event_type: type });
+          try {
+            ws.close();
+          } catch {}
+        }
+      })();
+    });
+    ws.addEventListener("close", () => {
+      if (opened) {
+        console.log(`[voice] sideband closed for call ${callId} (${seat})`);
+        logCallEvent(callId, { type: "call_end", seat, reason: "sideband_closed" });
+      } else {
+        scheduleRetry();
       }
-      if (type.includes("transcript") || type === "response.output_text.done" || type === "conversation.item.created") {
-        logCallEvent(callId, { type: "session_event", seat, event_type: type, item: data.item ?? null, text: data.text ?? data.transcript ?? null });
-      }
-      if (type === "realtime.call.ended" || type === "session.ended") {
-        logCallEvent(callId, { type: "call_end", seat, event_type: type });
-        try {
-          ws.close();
-        } catch {}
-      }
-    })();
-  });
-  ws.addEventListener("close", () => {
-    console.log(`[voice] sideband closed for call ${callId} (${seat})`);
-    logCallEvent(callId, { type: "call_end", seat, reason: "sideband_closed" });
-  });
-  ws.addEventListener("error", (ev) => {
-    console.error(`[voice] sideband error for call ${callId}:`, ev);
-    logCallEvent(callId, { type: "sideband_error", seat });
-  });
+    });
+    ws.addEventListener("error", (ev) => {
+      console.error(`[voice] sideband error for call ${callId}:`, ev);
+      logCallEvent(callId, { type: "sideband_error", seat, attempt });
+      if (!opened)
+        scheduleRetry();
+    });
+  };
+  connect();
 }
 var seenWebhookIds = new Set;
 var SEAT_SUFFIXES = ["4013739126", "4013365008"];
@@ -54631,6 +54673,8 @@ async function voiceWebhookHandler(req, res) {
       res.status(502).json({ ok: false, error: "Call accept failed." });
       return;
     }
+    const acceptBody = await acceptRes.text().catch(() => "");
+    console.log(`[voice] accept response for call ${callId}: ${acceptRes.status} ${acceptBody.slice(0, 300)}`);
   } catch (err) {
     console.error(`[voice] accept error for call ${callId}:`, err);
     res.status(502).json({ ok: false, error: "Call accept failed." });
@@ -54639,6 +54683,7 @@ async function voiceWebhookHandler(req, res) {
   console.log(`[voice] call ${callId} accepted for ${seat} (to ${to})`);
   logCallEvent(callId, { type: "call_accepted", seat, to });
   openSideband(callId, seat, apiKey);
+  res.set("Authorization", `Bearer ${apiKey}`);
   res.json({ ok: true, call_id: callId, seat });
 }
 
