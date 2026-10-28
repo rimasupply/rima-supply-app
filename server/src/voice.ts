@@ -23,7 +23,8 @@
  * - No live transfer is attempted: request_forward records the intent;
  *   SIP REFER needs a sip_uri mapping for Nate/store numbers that does
  *   not exist yet (open item — see the trunk spec doc).
- * - Delivery is the Team Thread via email behind env config. Every
+ * - Delivery is direct email from Anya's own Zoho mailbox to Randy and
+ *   Nate at RIMA Supply (no Gmail anywhere in the path). Every
  *   delivery is ALSO written to a durable outbox file under DATA_DIR, so
  *   nothing is lost when email env is absent; in that case the gap is
  *   logged, never papered over, and no credential is ever invented.
@@ -33,8 +34,10 @@
  *   OPENAI_API_KEY        — Realtime accept + sideband auth (required to accept)
  *   SHEETS_API_KEY        — x-sheets-key for the sheets lookup (fail closed when absent)
  *   VOICE_CATALOG_KEY     — x-voice-catalog-key for /api/voice/catalog (mirrors sheets auth)
- *   VOICE_GMAIL_ACCESS_TOKEN / VOICE_GMAIL_FROM / VOICE_TEAM_THREAD_TO
- *                         — Gmail API Team Thread sending (optional; outbox otherwise)
+ *   VOICE_SMTP_HOST / VOICE_SMTP_PORT — Zoho SMTP (defaults smtp.zoho.com:465)
+ *   VOICE_SMTP_USER / VOICE_SMTP_PASS — Anya's Zoho mailbox login (optional; outbox otherwise)
+ *   VOICE_SMTP_FROM       — From address (defaults to VOICE_SMTP_USER)
+ *   VOICE_RANDY_EMAIL / VOICE_NATE_EMAIL — recipients (defaults randyleary@ / nate@ rimasupply.com)
  *   VOICE_SELF_BASE_URL   — override for the internal sheets lookup (default 127.0.0.1:PORT)
  *   DATA_DIR / PORT       — shared with index.ts
  *
@@ -44,6 +47,7 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import nodemailer from "nodemailer";
 import type { Request, Response } from "express";
 import products from "./products.json";
 
@@ -319,7 +323,8 @@ export function logCallEvent(callId: string, event: Record<string, unknown>): vo
 }
 
 /* ------------------------------------------------------------------ */
-/* Team Thread delivery: durable outbox + optional Gmail API send      */
+/* Team delivery: durable outbox + Zoho SMTP from Anya's own mailbox   */
+/* (no Gmail anywhere in the path; direct to Randy and Nate)           */
 /* ------------------------------------------------------------------ */
 
 export type TeamThreadDelivery = {
@@ -328,9 +333,8 @@ export type TeamThreadDelivery = {
   body: string;
 };
 
-function toBase64Url(text: string): string {
-  return Buffer.from(text, "utf8").toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
+const RANDY_EMAIL = process.env.VOICE_RANDY_EMAIL ?? "randyleary@rimasupply.com";
+const NATE_EMAIL = process.env.VOICE_NATE_EMAIL ?? "nate@rimasupply.com";
 
 export async function deliverTeamThread(delivery: TeamThreadDelivery): Promise<{ queued: boolean; emailed: boolean }> {
   // Always queue durably first — the outbox is the record, email is a bonus.
@@ -344,38 +348,30 @@ export async function deliverTeamThread(delivery: TeamThreadDelivery): Promise<{
   } catch (err) {
     console.error("[voice] outbox write failed:", err);
   }
-  console.log(`[voice] Team Thread delivery queued: ${delivery.subject}`);
+  console.log(`[voice] team email queued: ${delivery.subject}`);
 
-  const token = process.env.VOICE_GMAIL_ACCESS_TOKEN ?? "";
-  const from = process.env.VOICE_GMAIL_FROM ?? "";
-  const toEnv = process.env.VOICE_TEAM_THREAD_TO ?? "";
-  if (!token || !from || !toEnv) {
-    console.log("[voice] Gmail env not configured — delivery stays in the outbox (gap: set VOICE_GMAIL_ACCESS_TOKEN, VOICE_GMAIL_FROM, VOICE_TEAM_THREAD_TO).");
+  const host = process.env.VOICE_SMTP_HOST ?? "smtp.zoho.com";
+  const port = Number(process.env.VOICE_SMTP_PORT ?? 465);
+  const user = process.env.VOICE_SMTP_USER ?? "";
+  const pass = process.env.VOICE_SMTP_PASS ?? "";
+  const from = process.env.VOICE_SMTP_FROM ?? user;
+  if (!user || !pass || !from) {
+    console.log("[voice] SMTP env not configured — delivery stays in the outbox (gap: set VOICE_SMTP_USER, VOICE_SMTP_PASS, VOICE_SMTP_FROM).");
     return { queued, emailed: false };
   }
-  const to = delivery.to.length > 0 ? delivery.to.join(", ") : toEnv;
-  const raw = [
-    `From: ${from}`,
-    `To: ${to}`,
-    `Subject: ${delivery.subject}`,
-    "Content-Type: text/plain; charset=utf-8",
-    "",
-    delivery.body,
-  ].join("\r\n");
+  const to = delivery.to.length > 0 ? delivery.to : [RANDY_EMAIL, NATE_EMAIL];
   try {
-    const res = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {
-      method: "POST",
-      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ raw: toBase64Url(raw) }),
+    const transport = nodemailer.createTransport({
+      host,
+      port,
+      secure: port === 465,
+      auth: { user, pass },
     });
-    if (!res.ok) {
-      console.error(`[voice] Gmail send failed (${res.status}); message remains in the outbox.`);
-      return { queued, emailed: false };
-    }
-    console.log(`[voice] Team Thread email sent: ${delivery.subject}`);
+    await transport.sendMail({ from, to: to.join(", "), subject: delivery.subject, text: delivery.body });
+    console.log(`[voice] team email sent: ${delivery.subject}`);
     return { queued, emailed: true };
   } catch (err) {
-    console.error("[voice] Gmail send error; message remains in the outbox:", err);
+    console.error(`[voice] SMTP send failed; message remains in the outbox:`, err);
     return { queued, emailed: false };
   }
 }
@@ -502,6 +498,9 @@ async function dispatchTool(seat: Seat, callId: string, name: string, args: Reco
     }
     case "take_message": {
       const forPerson = seat === "anya" ? s(args.for_person) : "team";
+      // Anya messages go to exactly the ONE person the caller needs; Hank
+      // messages and anything else go to both.
+      const to = forPerson === "nate" ? [NATE_EMAIL] : forPerson === "randy" ? [RANDY_EMAIL] : [];
       const body = [
         `MESSAGE FOR: ${seat === "anya" ? forPerson : "Randy and Nate (Hank message)"}`,
         `Caller: ${s(args.caller_name)}`,
@@ -509,7 +508,7 @@ async function dispatchTool(seat: Seat, callId: string, name: string, args: Reco
         `What they need (their words): ${s(args.message ?? args.question)}`,
         `Taken by: ${seat === "anya" ? "Anya" : "Hank"} (digital assistant)`,
       ].join("\n");
-      await deliverTeamThread({ to: [], subject: `MESSAGE FOR ${seat === "anya" ? forPerson.toUpperCase() : "RANDY AND NATE"} - ${s(args.caller_name)}`, body });
+      await deliverTeamThread({ to, subject: `MESSAGE FOR ${seat === "anya" ? forPerson.toUpperCase() : "RANDY AND NATE"} - ${s(args.caller_name)}`, body });
       return JSON.stringify({ captured: true });
     }
     case "capture_product_note": {
