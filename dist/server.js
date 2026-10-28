@@ -54462,7 +54462,7 @@ var SEAT_GREETING = {
   anya: "Rima Supply, this is Anya, RIMA's digital assistant, how can I help you?",
   hank: "Hank at RIMA Supply here, what can I help you with? I'm a digital assistant, but I'm trained on all of our products \u2014 shoot a question and I'll do my best to help you."
 };
-function openSideband(callId, seat, apiKey) {
+function openSideband(callId, seat, apiKey, config) {
   const url = `wss://api.openai.com/v1/realtime?call_id=${encodeURIComponent(callId)}`;
   const greeting = SEAT_GREETING[seat] ?? "";
   const maxAttempts = 6;
@@ -54501,9 +54501,10 @@ function openSideband(callId, seat, apiKey) {
       console.log(`[voice] sideband open for call ${callId} (${seat}, attempt ${attempt})`);
       logCallEvent(callId, { type: "sideband_open", seat, attempt });
       try {
+        ws.send(JSON.stringify({ type: "session.update", session: { instructions: config.instructions, tools: config.tools, tool_choice: config.tool_choice } }));
         ws.send(JSON.stringify({ type: "response.create", response: { instructions: `Say to the caller: ${greeting}` } }));
       } catch (err) {
-        console.error("[voice] greeting send failed:", err);
+        console.error("[voice] session update / greeting send failed:", err);
       }
     });
     ws.addEventListener("message", (ev) => {
@@ -54663,8 +54664,8 @@ async function voiceWebhookHandler(req, res) {
   try {
     const acceptRes = await fetch(`https://api.openai.com/v1/realtime/calls/${encodeURIComponent(callId)}/accept`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json", "OpenAI-Beta": "realtime=v1" },
-      body: JSON.stringify({ type: "realtime", model: config.model, instructions: config.instructions, tools: config.tools, tool_choice: config.tool_choice }),
+      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ type: "realtime", model: config.model, instructions: config.instructions }),
       signal: AbortSignal.timeout(1e4)
     });
     if (!acceptRes.ok) {
@@ -54681,8 +54682,8 @@ async function voiceWebhookHandler(req, res) {
     return;
   }
   console.log(`[voice] call ${callId} accepted for ${seat} (to ${to})`);
-  logCallEvent(callId, { type: "call_accepted", seat, to });
-  openSideband(callId, seat, apiKey);
+  logCallEvent(callId, { type: "call_accepted", seat, to, webhook_event: type });
+  openSideband(callId, seat, apiKey, config);
   res.set("Authorization", `Bearer ${apiKey}`);
   res.json({ ok: true, call_id: callId, seat });
 }

@@ -569,7 +569,7 @@ const SEAT_GREETING: Record<string, string> = {
   hank: "Hank at RIMA Supply here, what can I help you with? I'm a digital assistant, but I'm trained on all of our products — shoot a question and I'll do my best to help you.",
 };
 
-function openSideband(callId: string, seat: Seat, apiKey: string): void {
+function openSideband(callId: string, seat: Seat, apiKey: string, config: { instructions: string; tools: ToolDef[]; tool_choice: string }): void {
   const url = `wss://api.openai.com/v1/realtime?call_id=${encodeURIComponent(callId)}`;
   const greeting = SEAT_GREETING[seat] ?? "";
   // Twilio's official guide for this exact stack sends an Origin header and
@@ -607,11 +607,16 @@ function openSideband(callId: string, seat: Seat, apiKey: string): void {
       opened = true;
       console.log(`[voice] sideband open for call ${callId} (${seat}, attempt ${attempt})`);
       logCallEvent(callId, { type: "sideband_open", seat, attempt });
-      // Make the agent speak first with its scripted greeting.
+      // Tools live on the session, not in the accept payload: the SIP
+      // accept endpoint has answered 200 to overloaded payloads and then
+      // left the sideband unable to find the call (404), so configure
+      // tools here, then greet. The greeting needs no tools, so sending
+      // both in order is safe even if the update lands a beat later.
       try {
+        ws.send(JSON.stringify({ type: "session.update", session: { instructions: config.instructions, tools: config.tools, tool_choice: config.tool_choice } }));
         ws.send(JSON.stringify({ type: "response.create", response: { instructions: `Say to the caller: ${greeting}` } }));
       } catch (err) {
-        console.error("[voice] greeting send failed:", err);
+        console.error("[voice] session update / greeting send failed:", err);
       }
     });
     ws.addEventListener("message", (ev) => {
@@ -784,10 +789,15 @@ export async function voiceWebhookHandler(req: Request, res: Response): Promise<
   }
   const config = buildSessionConfig(seat);
   try {
+    // Accept stays minimal and guide-shaped: the GA Realtime API removed
+    // the OpenAI-Beta: realtime=v1 header (May 2026), and overloaded
+    // accept payloads have answered 200 while leaving the sideband
+    // unable to find the call (404). Tools are configured on the
+    // sideband via session.update once it opens, not here.
     const acceptRes = await fetch(`https://api.openai.com/v1/realtime/calls/${encodeURIComponent(callId)}/accept`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json", "OpenAI-Beta": "realtime=v1" },
-      body: JSON.stringify({ type: "realtime", model: config.model, instructions: config.instructions, tools: config.tools, tool_choice: config.tool_choice }),
+      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ type: "realtime", model: config.model, instructions: config.instructions }),
       signal: AbortSignal.timeout(10000),
     });
     if (!acceptRes.ok) {
@@ -804,10 +814,10 @@ export async function voiceWebhookHandler(req: Request, res: Response): Promise<
     return;
   }
   console.log(`[voice] call ${callId} accepted for ${seat} (to ${to})`);
-  logCallEvent(callId, { type: "call_accepted", seat, to });
+  logCallEvent(callId, { type: "call_accepted", seat, to, webhook_event: type });
   // Sideband is fire-and-forget: the call is live once we answer 200,
   // and a slow socket open must not hold the webhook response up.
-  openSideband(callId, seat, apiKey);
+  openSideband(callId, seat, apiKey, config);
   // Twilio's official guide for this stack sets an Authorization header on
   // the webhook response; match it.
   res.set("Authorization", `Bearer ${apiKey}`);
