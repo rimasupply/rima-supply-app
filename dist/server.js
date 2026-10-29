@@ -30001,8 +30001,8 @@ init_schema();
 var import_express = __toESM(require_express(), 1);
 var import_express_session = __toESM(require_express_session(), 1);
 import { Database as Database3 } from "bun:sqlite";
-import { existsSync as existsSync5, mkdirSync as mkdirSync4, copyFileSync as copyFileSync2 } from "fs";
-import { join as join8, resolve as resolve4 } from "path";
+import { existsSync as existsSync6, mkdirSync as mkdirSync5, copyFileSync as copyFileSync2 } from "fs";
+import { join as join9, resolve as resolve4 } from "path";
 
 // node_modules/zod/v4/core/core.js
 var _a;
@@ -54022,9 +54022,9 @@ function sheetsSearchHandler(req, res) {
 }
 
 // server/src/voice.ts
-import { createHmac, timingSafeEqual } from "crypto";
-import { appendFileSync, mkdirSync as mkdirSync3, writeFileSync as writeFileSync2 } from "fs";
-import { join as join7 } from "path";
+import { createHmac as createHmac2, timingSafeEqual as timingSafeEqual2 } from "crypto";
+import { appendFileSync, mkdirSync as mkdirSync4, writeFileSync as writeFileSync3 } from "fs";
+import { join as join8 } from "path";
 
 // node_modules/nodemailer/dist/esm/mailer/index.js
 import { EventEmitter } from "events";
@@ -65881,13 +65881,271 @@ var nodemailer = {
 };
 var nodemailer_default = nodemailer;
 
+// server/src/shopify.ts
+import { createHmac, randomBytes, timingSafeEqual } from "crypto";
+import { existsSync as existsSync4, mkdirSync as mkdirSync3, readFileSync as readFileSync3, unlinkSync as unlinkSync3, writeFileSync as writeFileSync2 } from "fs";
+import { join as join7 } from "path";
+var DATA_DIR = process.env.DATA_DIR ?? join7(process.cwd(), "data");
+var SHOP_DOMAIN = process.env.SHOPIFY_SHOP_DOMAIN ?? "aa1ea2-2.myshopify.com";
+var API_VERSION = process.env.SHOPIFY_API_VERSION ?? "2025-01";
+var PUBLIC_BASE = process.env.SHOPIFY_PUBLIC_BASE ?? "https://rima-supply-app-production.up.railway.app";
+var CLIENT_ID = process.env.SHOPIFY_CLIENT_ID ?? "";
+var CLIENT_SECRET = process.env.SHOPIFY_CLIENT_SECRET ?? "";
+var SCOPES = "write_draft_orders,read_orders,read_products";
+var TOKEN_PATH = join7(DATA_DIR, "shopify-token.json");
+var STATE_PATH = join7(DATA_DIR, "oauth-state.json");
+var STATE_TTL_MS = 10 * 60 * 1000;
+function readToken() {
+  try {
+    if (!existsSync4(TOKEN_PATH))
+      return null;
+    const parsed = JSON.parse(readFileSync3(TOKEN_PATH, "utf8"));
+    if (!parsed || typeof parsed.access_token !== "string" || parsed.access_token.length < 10)
+      return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+function shopifyInstallHandler(req, res) {
+  if (!CLIENT_ID) {
+    res.status(503).send("Shopify is not configured yet (client id missing).");
+    return;
+  }
+  const state = randomBytes(16).toString("hex");
+  mkdirSync3(DATA_DIR, { recursive: true });
+  writeFileSync2(STATE_PATH, JSON.stringify({ state, createdAt: Date.now() }), { mode: 384 });
+  const redirectUri = `${PUBLIC_BASE}/oauth/shopify/callback`;
+  const authorize = new URL(`https://${SHOP_DOMAIN}/admin/oauth/authorize`);
+  authorize.searchParams.set("client_id", CLIENT_ID);
+  authorize.searchParams.set("scope", SCOPES);
+  authorize.searchParams.set("redirect_uri", redirectUri);
+  authorize.searchParams.set("state", state);
+  res.redirect(authorize.toString());
+}
+function verifyShopifyHmac(query, secret) {
+  const provided = query.hmac ?? "";
+  if (!provided || !secret)
+    return false;
+  const message = Object.keys(query).filter((k) => k !== "hmac" && k !== "signature").sort().map((k) => `${k}=${query[k]}`).join("&");
+  const expected = createHmac("sha256", secret).update(message, "utf8").digest("hex");
+  if (provided.length !== expected.length)
+    return false;
+  try {
+    return timingSafeEqual(Buffer.from(provided, "utf8"), Buffer.from(expected, "utf8"));
+  } catch {
+    return false;
+  }
+}
+async function shopifyCallbackHandler(req, res) {
+  const fail = (msg) => {
+    console.log(`[shopify] OAuth callback refused: ${msg}`);
+    res.status(400).send("Shopify connection failed. Nothing was stored. Try the install link again.");
+  };
+  const query = req.query;
+  if (!CLIENT_ID || !CLIENT_SECRET) {
+    res.status(503).send("Shopify is not configured yet.");
+    return;
+  }
+  if (!query.code || !query.shop || !query.state || !query.hmac) {
+    fail("missing params");
+    return;
+  }
+  if (query.shop !== SHOP_DOMAIN) {
+    fail("shop mismatch");
+    return;
+  }
+  let pending = null;
+  try {
+    pending = JSON.parse(readFileSync3(STATE_PATH, "utf8"));
+  } catch {
+    pending = null;
+  }
+  try {
+    unlinkSync3(STATE_PATH);
+  } catch {}
+  if (!pending || pending.state !== query.state || Date.now() - pending.createdAt > STATE_TTL_MS) {
+    fail("bad or expired state");
+    return;
+  }
+  if (!verifyShopifyHmac(query, CLIENT_SECRET)) {
+    fail("hmac mismatch");
+    return;
+  }
+  try {
+    const resp = await fetch(`https://${SHOP_DOMAIN}/admin/oauth/access_token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ client_id: CLIENT_ID, client_secret: CLIENT_SECRET, code: query.code })
+    });
+    if (!resp.ok) {
+      console.log(`[shopify] Token exchange failed: HTTP ${resp.status}`);
+      res.status(502).send("Shopify connection failed at the token exchange. Nothing was stored.");
+      return;
+    }
+    const data = await resp.json();
+    if (!data.access_token) {
+      console.log("[shopify] Token exchange returned no token");
+      res.status(502).send("Shopify connection failed at the token exchange. Nothing was stored.");
+      return;
+    }
+    mkdirSync3(DATA_DIR, { recursive: true });
+    const stored = {
+      shop: SHOP_DOMAIN,
+      access_token: data.access_token,
+      scope: data.scope ?? SCOPES,
+      obtained_at: new Date().toISOString()
+    };
+    writeFileSync2(TOKEN_PATH, JSON.stringify(stored), { mode: 384 });
+    console.log(`[shopify] Connected to ${SHOP_DOMAIN} (scopes: ${stored.scope})`);
+    res.send(`<!doctype html><html><body><h1>RIMA Supply voice app connected to ${SHOP_DOMAIN}</h1>` + `<p>Draft orders are now enabled. No credentials are shown on this page.</p></body></html>`);
+  } catch (err) {
+    console.log(`[shopify] Token exchange error: ${err instanceof Error ? err.message : "unknown"}`);
+    res.status(502).send("Shopify connection failed at the token exchange. Nothing was stored.");
+  }
+}
+async function shopifyGraphQL(token, query, variables) {
+  const resp = await fetch(`https://${SHOP_DOMAIN}/admin/api/${API_VERSION}/graphql.json`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Shopify-Access-Token": token
+    },
+    body: JSON.stringify({ query, variables })
+  });
+  if (!resp.ok)
+    throw new Error(`Shopify API HTTP ${resp.status}`);
+  const data = await resp.json();
+  if (data.errors && data.errors.length > 0)
+    throw new Error(data.errors[0].message);
+  if (!data.data)
+    throw new Error("empty Shopify response");
+  return data.data;
+}
+async function resolveVariant(token, segment) {
+  const codeTokens = (segment.match(/[A-Za-z]{2,}[\w-]*\d[\w-]*/g) ?? []).map((t) => t.replace(/^-+|-+$/g, "")).filter((t) => t.length >= 4);
+  const words = segment.split(/[^A-Za-z0-9]+/).filter((w) => w.length >= 3);
+  const candidates = [];
+  for (const t of codeTokens.slice(0, 2)) {
+    candidates.push(t);
+    const compact = t.replace(/-/g, "");
+    if (compact !== t)
+      candidates.push(compact);
+  }
+  if (candidates.length === 0 && words.length > 0) {
+    candidates.push(words.sort((a, b) => b.length - a.length)[0]);
+  }
+  const productQuery = `
+    query FindProduct($q: String!) {
+      products(first: 5, query: $q) {
+        edges { node { title variants(first: 1) { edges { node { id title } } } } }
+      }
+    }`;
+  for (const cand of candidates.slice(0, 3)) {
+    const q = `sku:${cand} OR title:*${cand}* OR barcode:${cand}`;
+    try {
+      const data = await shopifyGraphQL(token, productQuery, { q });
+      const first = data.products.edges[0];
+      const variant = first?.node.variants.edges[0]?.node;
+      if (first && variant) {
+        return { variantId: variant.id, title: first.node.title, variantTitle: variant.title };
+      }
+    } catch (err) {
+      console.log(`[shopify] Variant lookup failed for "${cand}": ${err instanceof Error ? err.message : "unknown"}`);
+    }
+  }
+  return null;
+}
+function parseQuantity(segment) {
+  const m = segment.match(/^\s*(\d+)\s*[x\u00D7]\b/i) ?? segment.match(/\b[x\u00D7]\s*(\d+)\s*$/i) ?? segment.match(/\bqty\s*(\d+)/i) ?? segment.match(/\b(\d+)\s+(each|ea|pack|case|box|roll|gal|gallon)\b/i);
+  const n = m ? Number(m[1]) : 1;
+  if (!Number.isFinite(n) || n < 1)
+    return 1;
+  return Math.min(n, 999);
+}
+async function createShopifyDraft(input) {
+  const token = readToken();
+  if (!token)
+    return { ok: false, reason: "shopify_not_connected" };
+  const shopHandle = SHOP_DOMAIN.split(".")[0];
+  const noteLines = [
+    "Voice draft \u2014 captured by Anya (digital assistant). NOT confirmed.",
+    `Caller: ${input.callerName}`,
+    `Shop: ${input.shop}`,
+    `Callback phone: ${input.callbackPhone}`,
+    `Email: ${input.email}`,
+    `Pickup or delivery (caller's preference, not a promise): ${input.pickupOrDelivery}`,
+    `Paint order? ${input.paintOrder ? "yes - route to Nate" : "no"}`,
+    `Notes: ${input.notes}`,
+    "Price quoted: NONE \u2014 Randy or Nate to confirm"
+  ];
+  let lineItems = [];
+  let matched = 0;
+  let unmatched = 0;
+  if (input.paintOrder) {
+    noteLines.push(`Paint details (in notes per shop rule): ${input.itemsText}`);
+  } else {
+    const segments = input.itemsText.split(/[\n;]+/).map((s) => s.trim()).filter(Boolean).slice(0, 20);
+    const matchedLines = [];
+    const unmatchedLines = [];
+    for (const segment of segments) {
+      const hit = await resolveVariant(token.access_token, segment);
+      if (hit) {
+        lineItems.push({ variantId: hit.variantId, quantity: parseQuantity(segment) });
+        matched += 1;
+        matchedLines.push(`${parseQuantity(segment)} x ${hit.title}${hit.variantTitle !== "Default Title" ? ` (${hit.variantTitle})` : ""} \u2014 caller said: "${segment}"`);
+      } else {
+        unmatched += 1;
+        unmatchedLines.push(segment);
+      }
+    }
+    if (matchedLines.length > 0)
+      noteLines.push("Matched lines:", ...matchedLines);
+    if (unmatchedLines.length > 0) {
+      noteLines.push("Unmatched items (in this note, NOT on lines \u2014 team to identify):", ...unmatchedLines);
+    }
+    if (segments.length === 0)
+      noteLines.push(`Items (as the caller said them): ${input.itemsText}`);
+  }
+  const mutation = `
+    mutation DraftOrderCreate($input: DraftOrderInput!) {
+      draftOrderCreate(input: $input) {
+        draftOrder { id name }
+        userErrors { field message }
+      }
+    }`;
+  const draftInput = {
+    note: noteLines.join(`
+`),
+    tags: ["voice-draft"],
+    lineItems
+  };
+  if (input.email)
+    draftInput.email = input.email;
+  try {
+    const data = await shopifyGraphQL(token.access_token, mutation, { input: draftInput });
+    const created = data.draftOrderCreate.draftOrder;
+    const errors = data.draftOrderCreate.userErrors;
+    if (!created) {
+      throw new Error(errors.length > 0 ? errors[0].message : "draft not created");
+    }
+    const numericId = created.id.split("/").pop() ?? "";
+    const adminUrl = `https://admin.shopify.com/store/${shopHandle}/draft_orders/${numericId}`;
+    console.log(`[shopify] Draft created: ${created.name} (${matched} matched, ${unmatched} unmatched)`);
+    return { ok: true, name: created.name, adminUrl, matched, unmatched };
+  } catch (err) {
+    console.log(`[shopify] Draft create failed: ${err instanceof Error ? err.message : "unknown"}`);
+    return { ok: false, reason: "draft_create_failed" };
+  }
+}
+
 // server/src/voice.ts
 var VOICE_MODEL = "gpt-realtime-2.1";
-var DATA_DIR = process.env.DATA_DIR ?? join7(process.cwd(), "data");
+var DATA_DIR2 = process.env.DATA_DIR ?? join8(process.cwd(), "data");
 var PORT = Number(process.env.PORT ?? 3000);
 function dataDir2(sub) {
-  const dir = join7(DATA_DIR, sub);
-  mkdirSync3(dir, { recursive: true });
+  const dir = join8(DATA_DIR2, sub);
+  mkdirSync4(dir, { recursive: true });
   return dir;
 }
 function verifyOpenAIWebhookSignature(rawBody, headers, secret) {
@@ -65909,13 +66167,13 @@ function verifyOpenAIWebhookSignature(rawBody, headers, secret) {
     key = Buffer.from(secret, "utf8");
   }
   const signed = `${headers.id}.${headers.timestamp}.${rawBody.toString("utf8")}`;
-  const expected = createHmac("sha256", key).update(signed, "utf8").digest("base64");
+  const expected = createHmac2("sha256", key).update(signed, "utf8").digest("base64");
   for (const part of headers.signature.split(" ")) {
     const candidate = part.startsWith("v1,") ? part.slice(3) : part;
     if (candidate.length !== expected.length)
       continue;
     try {
-      if (timingSafeEqual(Buffer.from(candidate, "utf8"), Buffer.from(expected, "utf8")))
+      if (timingSafeEqual2(Buffer.from(candidate, "utf8"), Buffer.from(expected, "utf8")))
         return true;
     } catch {
       continue;
@@ -66109,7 +66367,7 @@ function logCallEvent(callId, event) {
     const dir = dataDir2("voice-calls");
     const line = JSON.stringify({ ts: new Date().toISOString(), ...event }) + `
 `;
-    appendFileSync(join7(dir, `${safeCallId(callId)}.jsonl`), line);
+    appendFileSync(join8(dir, `${safeCallId(callId)}.jsonl`), line);
   } catch (err) {
     console.error("[voice] call log write failed:", err);
   }
@@ -66122,7 +66380,7 @@ async function deliverTeamThread(delivery) {
     const dir = dataDir2("voice-outbox");
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
     const name = `${stamp}-${Math.random().toString(36).slice(2, 8)}.json`;
-    writeFileSync2(join7(dir, name), JSON.stringify({ ...delivery, queued_at: new Date().toISOString() }, null, 2));
+    writeFileSync3(join8(dir, name), JSON.stringify({ ...delivery, queued_at: new Date().toISOString() }, null, 2));
     queued = true;
   } catch (err) {
     console.error("[voice] outbox write failed:", err);
@@ -66242,8 +66500,30 @@ async function dispatchTool(seat, callId, name, args) {
         "Status: DRAFT, awaiting a human"
       ].join(`
 `);
-      await deliverTeamThread({ to: [], subject: `DRAFT ORDER - ${s(args.caller_name)}`, body });
-      return JSON.stringify({ captured: true, price: "NONE" });
+      let emailBody = body;
+      try {
+        const draft = await createShopifyDraft({
+          callerName: s(args.caller_name),
+          callbackPhone: s(args.callback_phone),
+          shop: s(args.shop),
+          email: s(args.email),
+          itemsText: s(args.items),
+          pickupOrDelivery: s(args.pickup_or_delivery),
+          paintOrder: paint,
+          notes: s(args.notes)
+        });
+        emailBody += draft.ok ? `
+Shopify draft: ${draft.name} \u2014 ${draft.adminUrl}` : `
+Shopify draft: NOT created (${draft.reason})`;
+        await deliverTeamThread({ to: [], subject: `DRAFT ORDER - ${s(args.caller_name)}`, body: emailBody });
+        return JSON.stringify({ captured: true, price: "NONE", shopify_draft: draft.ok ? "created" : "not_created" });
+      } catch (err) {
+        console.error("[voice] Shopify draft failed:", err instanceof Error ? err.message : "unknown");
+        emailBody += `
+Shopify draft: NOT created (error \u2014 see server log)`;
+        await deliverTeamThread({ to: [], subject: `DRAFT ORDER - ${s(args.caller_name)}`, body: emailBody });
+        return JSON.stringify({ captured: true, price: "NONE", shopify_draft: "not_created" });
+      }
     }
     case "take_message": {
       const forPerson = seat === "anya" ? s(args.for_person) : "team";
@@ -66585,13 +66865,13 @@ class SqliteSessionStore extends import_express_session.default.Store {
   }
 }
 var PORT2 = Number(process.env.PORT ?? 3000);
-var DATA_DIR2 = process.env.DATA_DIR ?? join8(process.cwd(), "data");
-var DB_PATH = process.env.DB_PATH ?? join8(DATA_DIR2, "app.db");
+var DATA_DIR3 = process.env.DATA_DIR ?? join9(process.cwd(), "data");
+var DB_PATH = process.env.DB_PATH ?? join9(DATA_DIR3, "app.db");
 var SESSION_SECRET = process.env.SESSION_SECRET ?? "rima-dev-secret-change-me";
 var BASE_URL = process.env.BASE_URL ?? `http://localhost:${PORT2}`;
-mkdirSync4(DATA_DIR2, { recursive: true });
-var SEED_DB = join8(process.cwd(), "data", "app.db");
-if (!existsSync5(DB_PATH) && existsSync5(SEED_DB) && resolve4(SEED_DB) !== resolve4(DB_PATH)) {
+mkdirSync5(DATA_DIR3, { recursive: true });
+var SEED_DB = join9(process.cwd(), "data", "app.db");
+if (!existsSync6(DB_PATH) && existsSync6(SEED_DB) && resolve4(SEED_DB) !== resolve4(DB_PATH)) {
   console.log(`[rima] Seeding database from ${SEED_DB}`);
   copyFileSync2(SEED_DB, DB_PATH);
 }
@@ -66599,9 +66879,9 @@ var sqlite = new Database3(DB_PATH, { create: true });
 sqlite.exec("PRAGMA journal_mode = WAL;");
 sqlite.exec("PRAGMA foreign_keys = ON;");
 var db2 = wrapDb(drizzle(sqlite, { schema: exports_schema }));
-runMigrations(sqlite, join8(process.cwd(), "server", "drizzle"));
+runMigrations(sqlite, join9(process.cwd(), "server", "drizzle"));
 await ensureSeedAdmin(db2);
-setRestoreContext({ sqlite, dbPath: DB_PATH, dataDir: DATA_DIR2 });
+setRestoreContext({ sqlite, dbPath: DB_PATH, dataDir: DATA_DIR3 });
 var app = import_express.default();
 app.set("trust proxy", 1);
 app.use("/webhooks/openai-call-incoming", import_express.default.raw({ type: "*/*", limit: "1mb" }));
@@ -66685,7 +66965,7 @@ app.get("/api/blobs/:key", (req, res) => {
   }
   const key = decodeURIComponent(req.params.key);
   const path = blobPathForKey(key);
-  if (!existsSync5(path)) {
+  if (!existsSync6(path)) {
     res.status(404).json({ ok: false, error: "File not found." });
     return;
   }
@@ -66694,6 +66974,8 @@ app.get("/api/blobs/:key", (req, res) => {
 app.get("/api/sheets/search", sheetsSearchHandler);
 app.post("/webhooks/openai-call-incoming", voiceWebhookHandler);
 app.get("/api/voice/catalog", voiceCatalogHandler);
+app.get("/oauth/shopify/install", shopifyInstallHandler);
+app.get("/oauth/shopify/callback", shopifyCallbackHandler);
 app.get("/sms-opt-in", (_req, res) => {
   res.type("html").send(`<!doctype html>
 <html lang="en">
@@ -66725,21 +67007,21 @@ a { color: #0645ad; }
 </html>`);
 });
 app.get("/api/health", (_req, res) => res.json({ ok: true, time: new Date().toISOString() }));
-var clientDir = join8(process.cwd(), "client", "dist");
-if (existsSync5(join8(clientDir, "index.html"))) {
+var clientDir = join9(process.cwd(), "client", "dist");
+if (existsSync6(join9(clientDir, "index.html"))) {
   app.use(import_express.default.static(clientDir));
   app.use((_req, res) => {
-    res.sendFile(join8(clientDir, "index.html"));
+    res.sendFile(join9(clientDir, "index.html"));
   });
 } else {
   app.get("/", (_req, res) => res.send("RIMA Supply API \u2014 client not built yet. Run: bun run build:client"));
 }
 app.listen(PORT2, () => {
-  console.log(`[rima] Listening on :${PORT2} (data: ${DATA_DIR2})`);
+  console.log(`[rima] Listening on :${PORT2} (data: ${DATA_DIR3})`);
 });
 Promise.resolve().then(() => (init_backup(), {})).then(({}) => {
-  maybeAutoBackup(sqlite, DATA_DIR2);
+  maybeAutoBackup(sqlite, DATA_DIR3);
   setInterval(() => {
-    maybeAutoBackup(sqlite, DATA_DIR2);
+    maybeAutoBackup(sqlite, DATA_DIR3);
   }, 3600000);
 }).catch((e) => console.log("[backup] Scheduler init failed:", e));

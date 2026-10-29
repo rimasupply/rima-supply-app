@@ -39,6 +39,11 @@
  *   VOICE_SMTP_FROM       — From address (defaults to VOICE_SMTP_USER)
  *   VOICE_RANDY_EMAIL / VOICE_NATE_EMAIL — recipients (defaults randyleary@ / nate@ rimasupply.com)
  *   VOICE_SELF_BASE_URL   — override for the internal sheets lookup (default 127.0.0.1:PORT)
+ *   SHOPIFY_CLIENT_ID / SHOPIFY_CLIENT_SECRET — Dev Dashboard app (draft orders)
+ *   SHOPIFY_SHOP_DOMAIN — myshopify domain (default aa1ea2-2.myshopify.com)
+ *   SHOPIFY_PUBLIC_BASE — public app URL for the OAuth redirect (default Railway URL)
+ *   Shopify token: stored server-side in DATA_DIR/shopify-token.json after
+ *   OAuth; never logged, never committed, never sent to the model.
  *   DATA_DIR / PORT       — shared with index.ts
  *
  * Seats stay OFF until Randy flips one on; this receiver only answers
@@ -49,6 +54,7 @@ import { appendFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import nodemailer from "nodemailer";
 import type { Request, Response } from "express";
+import { createShopifyDraft } from "./shopify";
 import products from "./products.json";
 
 export const ANYA_NUMBER = "+14013739126";
@@ -493,8 +499,32 @@ async function dispatchTool(seat: Seat, callId: string, name: string, args: Reco
         "Next step: Randy or Nate to call back for a price",
         "Status: DRAFT, awaiting a human",
       ].join("\n");
-      await deliverTeamThread({ to: [], subject: `DRAFT ORDER - ${s(args.caller_name)}`, body });
-      return JSON.stringify({ captured: true, price: "NONE" });
+      // Shopify draft beside the email. A failed draft never fails the
+      // call: the email + outbox still carry the order. The model-facing
+      // return carries no URL or draft id, so nothing leaks into speech.
+      let emailBody = body;
+      try {
+        const draft = await createShopifyDraft({
+          callerName: s(args.caller_name),
+          callbackPhone: s(args.callback_phone),
+          shop: s(args.shop),
+          email: s(args.email),
+          itemsText: s(args.items),
+          pickupOrDelivery: s(args.pickup_or_delivery),
+          paintOrder: paint,
+          notes: s(args.notes),
+        });
+        emailBody += draft.ok
+          ? `\nShopify draft: ${draft.name} — ${draft.adminUrl}`
+          : `\nShopify draft: NOT created (${draft.reason})`;
+        await deliverTeamThread({ to: [], subject: `DRAFT ORDER - ${s(args.caller_name)}`, body: emailBody });
+        return JSON.stringify({ captured: true, price: "NONE", shopify_draft: draft.ok ? "created" : "not_created" });
+      } catch (err) {
+        console.error("[voice] Shopify draft failed:", err instanceof Error ? err.message : "unknown");
+        emailBody += "\nShopify draft: NOT created (error — see server log)";
+        await deliverTeamThread({ to: [], subject: `DRAFT ORDER - ${s(args.caller_name)}`, body: emailBody });
+        return JSON.stringify({ captured: true, price: "NONE", shopify_draft: "not_created" });
+      }
     }
     case "take_message": {
       const forPerson = seat === "anya" ? s(args.for_person) : "team";

@@ -3,4 +3,7 @@ node_modules/
 *.log
 data/app.db-shm
 data/app.db-wal
+# Shopify OAuth token + pending state (server-side only; never commit)
+data/shopify-token.json
+data/oauth-state.json
 .DS_Store

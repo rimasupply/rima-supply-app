@@ -17,6 +17,7 @@ import { blobPathForKey, createBlobs } from "./blobs";
 import { runMigrations } from "./migrate";
 import { sheetsSearchHandler } from "./sheets";
 import { voiceCatalogHandler, voiceWebhookHandler } from "./voice";
+import { shopifyCallbackHandler, shopifyInstallHandler } from "./shopify";
 import { setRestoreContext } from "./restore";
 import { anthropicComplete, wrapDb, type AuthUser, type Ctx, type Db } from "./sdk-compat";
 
@@ -213,6 +214,13 @@ app.get("/api/sheets/search", sheetsSearchHandler);
 // ---- Voice receiver (OpenAI Realtime SIP calls for Anya + Hank) ----
 app.post("/webhooks/openai-call-incoming", voiceWebhookHandler);
 app.get("/api/voice/catalog", voiceCatalogHandler);
+
+// ---- Shopify OAuth (Anya draft orders) ----
+// Public by design: Shopify redirects here logged-out after approval.
+// The callback verifies state + HMAC + shop before storing anything,
+// and the token itself never appears in any response.
+app.get("/oauth/shopify/install", shopifyInstallHandler);
+app.get("/oauth/shopify/callback", shopifyCallbackHandler);
 
 // ---- Public SMS opt-in proof page (Twilio A2P campaign evidence) ----
 // Deliberately NO sign-in check: carriers and Twilio reviewers must be
