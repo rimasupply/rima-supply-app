@@ -467,6 +467,10 @@ export async function lookupSheets(query: string): Promise<SheetLookupResult> {
 async function dispatchTool(seat: Seat, callId: string, name: string, args: Record<string, unknown>): Promise<string> {
   const s = (v: unknown) => String(v ?? "");
   logCallEvent(callId, { type: "tool_call", seat, tool: name, args });
+  // Console trace (tool name + call id only, never caller details): the
+  // deploy log is the only window into a live call, so a fired tool must
+  // leave a line here even if everything downstream stalls.
+  console.log(`[voice] tool call: ${name} (call ${callId})`);
   switch (name) {
     case "search_catalog": {
       const results = searchCatalog(s(args.query));
@@ -504,6 +508,7 @@ async function dispatchTool(seat: Seat, callId: string, name: string, args: Reco
       // return carries no URL or draft id, so nothing leaks into speech.
       let emailBody = body;
       try {
+        console.log(`[voice] draft capture: creating Shopify draft (call ${callId})`);
         const draft = await createShopifyDraft({
           callerName: s(args.caller_name),
           callbackPhone: s(args.callback_phone),

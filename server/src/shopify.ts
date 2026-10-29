@@ -48,6 +48,12 @@ const TOKEN_PATH = join(DATA_DIR, "shopify-token.json");
 const STATE_PATH = join(DATA_DIR, "oauth-state.json");
 const STATE_TTL_MS = 10 * 60 * 1000;
 
+/** Fetch with a hard timeout: a stalled upstream must fail loudly, never
+ *  hang an order capture silently while the caller is still on the line. */
+async function fetchWithTimeout(url: string, init: RequestInit, ms = 15000): Promise<Response> {
+  return fetch(url, { ...init, signal: AbortSignal.timeout(ms) });
+}
+
 type StoredToken = { shop: string; access_token: string; scope: string; obtained_at: string };
 
 function readToken(): StoredToken | null {
@@ -146,7 +152,7 @@ export async function shopifyCallbackHandler(req: Request, res: Response): Promi
   // Exchange the code for a permanent offline token. The code and the
   // token are never logged.
   try {
-    const resp = await fetch(`https://${SHOP_DOMAIN}/admin/oauth/access_token`, {
+    const resp = await fetchWithTimeout(`https://${SHOP_DOMAIN}/admin/oauth/access_token`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ client_id: CLIENT_ID, client_secret: CLIENT_SECRET, code: query.code }),
@@ -186,7 +192,7 @@ export async function shopifyCallbackHandler(req: Request, res: Response): Promi
 /* ------------------------------------------------------------------ */
 
 async function shopifyGraphQL<T>(token: string, query: string, variables: Record<string, unknown>): Promise<T> {
-  const resp = await fetch(`https://${SHOP_DOMAIN}/admin/api/${API_VERSION}/graphql.json`, {
+  const resp = await fetchWithTimeout(`https://${SHOP_DOMAIN}/admin/api/${API_VERSION}/graphql.json`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",

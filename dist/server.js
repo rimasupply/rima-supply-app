@@ -65895,6 +65895,9 @@ var SCOPES = "write_draft_orders,read_orders,read_products";
 var TOKEN_PATH = join7(DATA_DIR, "shopify-token.json");
 var STATE_PATH = join7(DATA_DIR, "oauth-state.json");
 var STATE_TTL_MS = 10 * 60 * 1000;
+async function fetchWithTimeout(url, init, ms = 15000) {
+  return fetch(url, { ...init, signal: AbortSignal.timeout(ms) });
+}
 function readToken() {
   try {
     if (!existsSync4(TOKEN_PATH))
@@ -65973,7 +65976,7 @@ async function shopifyCallbackHandler(req, res) {
     return;
   }
   try {
-    const resp = await fetch(`https://${SHOP_DOMAIN}/admin/oauth/access_token`, {
+    const resp = await fetchWithTimeout(`https://${SHOP_DOMAIN}/admin/oauth/access_token`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ client_id: CLIENT_ID, client_secret: CLIENT_SECRET, code: query.code })
@@ -66005,7 +66008,7 @@ async function shopifyCallbackHandler(req, res) {
   }
 }
 async function shopifyGraphQL(token, query, variables) {
-  const resp = await fetch(`https://${SHOP_DOMAIN}/admin/api/${API_VERSION}/graphql.json`, {
+  const resp = await fetchWithTimeout(`https://${SHOP_DOMAIN}/admin/api/${API_VERSION}/graphql.json`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -66468,6 +66471,7 @@ async function lookupSheets(query) {
 async function dispatchTool(seat, callId, name, args) {
   const s = (v) => String(v ?? "");
   logCallEvent(callId, { type: "tool_call", seat, tool: name, args });
+  console.log(`[voice] tool call: ${name} (call ${callId})`);
   switch (name) {
     case "search_catalog": {
       const results = searchCatalog(s(args.query));
@@ -66502,6 +66506,7 @@ async function dispatchTool(seat, callId, name, args) {
 `);
       let emailBody = body;
       try {
+        console.log(`[voice] draft capture: creating Shopify draft (call ${callId})`);
         const draft = await createShopifyDraft({
           callerName: s(args.caller_name),
           callbackPhone: s(args.callback_phone),
