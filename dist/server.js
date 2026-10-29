@@ -66375,6 +66375,119 @@ function logCallEvent(callId, event) {
     console.error("[voice] call log write failed:", err);
   }
 }
+var callRecords = new Map;
+function callRecord(callId) {
+  let rec = callRecords.get(callId);
+  if (!rec) {
+    if (callRecords.size > 100) {
+      const oldest = callRecords.keys().next().value;
+      if (oldest)
+        callRecords.delete(oldest);
+    }
+    rec = { startedAt: Date.now(), turns: [], tools: [], callerName: "" };
+    callRecords.set(callId, rec);
+  }
+  return rec;
+}
+function recordCallTurn(callId, speaker, text) {
+  const clean = text.trim();
+  if (!clean)
+    return;
+  const rec = callRecord(callId);
+  const last = rec.turns[rec.turns.length - 1];
+  if (last && last.speaker === speaker && last.text === clean)
+    return;
+  if (rec.turns.length < 300)
+    rec.turns.push({ speaker, text: clean });
+}
+function recordCallTool(callId, name, detail) {
+  callRecord(callId).tools.push({ name, detail });
+}
+function recordCallCaller(callId, name) {
+  const rec = callRecord(callId);
+  if (!rec.callerName)
+    rec.callerName = name;
+}
+async function sendCallSummary(callId, seat, startedAt) {
+  try {
+    const rec = callRecords.get(callId);
+    callRecords.delete(callId);
+    const turns = rec?.turns ?? [];
+    const tools = rec?.tools ?? [];
+    const callerName = rec?.callerName ?? "";
+    const seatName = seat === "anya" ? "Anya" : "Hank";
+    const secs = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
+    const duration = secs < 90 ? `${secs}s` : `${Math.round(secs / 60)} min`;
+    let transcriptText = turns.map((t) => `${t.speaker}: ${t.text}`).join(`
+`);
+    if (transcriptText.length > 12000)
+      transcriptText = `${transcriptText.slice(0, 12000)}
+[transcript truncated]`;
+    const toolsLine = tools.length > 0 ? tools.map((t) => t.detail ? `${t.name} (${t.detail})` : t.name).join(", ") : "none";
+    let summaryText = "";
+    const apiKey = process.env.OPENAI_API_KEY ?? "";
+    if (apiKey && transcriptText) {
+      try {
+        const resp = await fetch("https://api.openai.com/v1/chat/completions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+          body: JSON.stringify({
+            model: "gpt-4o-mini",
+            messages: [
+              { role: "system", content: "Summarize this store phone call for the team in 4-6 short lines: who called (only if stated), what they wanted, items or order details, questions asked, what the assistant promised or captured, and anything needing a human follow-up. Do not invent details not in the transcript. If no order was placed, say so plainly." },
+              { role: "user", content: `Transcript:
+${transcriptText}
+
+Tools used on this call: ${toolsLine}` }
+            ],
+            max_tokens: 600,
+            temperature: 0.2
+          }),
+          signal: AbortSignal.timeout(15000)
+        });
+        if (resp.ok) {
+          const data = await resp.json();
+          summaryText = (data.choices?.[0]?.message?.content ?? "").trim();
+        }
+      } catch (err) {
+        console.log(`[voice] call summary LLM failed, using rule-based summary: ${err instanceof Error ? err.message : "unknown"}`);
+      }
+    }
+    if (!summaryText) {
+      const lines = [
+        `Duration: ${duration}`,
+        `Spoken turns: ${turns.length}`,
+        `Tools used: ${toolsLine}`
+      ];
+      const deliveryTools = ["capture_draft_order", "take_message", "capture_product_note", "capture_document_request", "escalate_to_team"];
+      if (!tools.some((t) => deliveryTools.includes(t.name))) {
+        lines.push("No order or message was captured on this call \u2014 follow up with the caller if they needed something.");
+      }
+      const draftTool = tools.find((t) => t.name === "capture_draft_order");
+      if (draftTool && draftTool.detail === "draft not_created") {
+        lines.push("A draft capture ran but the Shopify draft was NOT created \u2014 see the draft email for the reason.");
+      }
+      summaryText = lines.join(`
+`);
+    }
+    const body = [
+      `CALL SUMMARY - ${seatName}`,
+      `Caller: ${callerName || "unknown"}`,
+      `Duration: ${duration}`,
+      "",
+      "Summary:",
+      summaryText,
+      "",
+      "--- Transcript ---",
+      transcriptText || "(no spoken turns captured)"
+    ].join(`
+`);
+    await deliverTeamThread({ to: [], subject: `CALL SUMMARY - ${seatName} - ${callerName || "unknown caller"}`, body });
+    console.log(`[voice] call summary sent for call ${callId}`);
+  } catch (err) {
+    console.error(`[voice] call summary failed for call ${callId}:`, err instanceof Error ? err.message : "unknown");
+  }
+}
 var RANDY_EMAIL = process.env.VOICE_RANDY_EMAIL ?? "randyleary@rimasupply.com";
 var NATE_EMAIL = process.env.VOICE_NATE_EMAIL ?? "nate@rimasupply.com";
 async function deliverTeamThread(delivery) {
@@ -66469,6 +66582,23 @@ async function lookupSheets(query) {
   }
 }
 async function dispatchTool(seat, callId, name, args) {
+  const output = await dispatchToolInner(seat, callId, name, args);
+  try {
+    const parsed = JSON.parse(output);
+    let detail = "";
+    if (name === "capture_draft_order" && typeof parsed.shopify_draft === "string") {
+      detail = `draft ${parsed.shopify_draft}`;
+    }
+    recordCallTool(callId, name, detail);
+  } catch {
+    recordCallTool(callId, name, "");
+  }
+  const caller = args.caller_name;
+  if (typeof caller === "string" && caller.trim())
+    recordCallCaller(callId, caller.trim());
+  return output;
+}
+async function dispatchToolInner(seat, callId, name, args) {
   const s = (v) => String(v ?? "");
   logCallEvent(callId, { type: "tool_call", seat, tool: name, args });
   console.log(`[voice] tool call: ${name} (call ${callId})`);
@@ -66602,6 +66732,7 @@ function openSideband(callId, seat, apiKey, config) {
   const delaysMs = [0, 1000, 2000, 4000, 8000];
   let attempt = 0;
   let opened = false;
+  const callStartedAt = Date.now();
   let retryPending = false;
   const scheduleRetry = () => {
     if (opened || retryPending)
@@ -66672,6 +66803,13 @@ function openSideband(callId, seat, apiKey, config) {
         }
         if (type.includes("transcript") || type === "response.output_text.done" || type === "conversation.item.created") {
           logCallEvent(callId, { type: "session_event", seat, event_type: type, item: data.item ?? null, text: data.text ?? data.transcript ?? null });
+          if (type === "conversation.item.input_audio_transcription.completed" && typeof data.transcript === "string" && data.transcript) {
+            recordCallTurn(callId, "Caller", data.transcript);
+          } else if (type === "response.audio_transcript.done" && typeof data.transcript === "string" && data.transcript) {
+            recordCallTurn(callId, seat === "anya" ? "Anya" : "Hank", data.transcript);
+          } else if (type === "response.output_text.done" && typeof data.text === "string" && data.text) {
+            recordCallTurn(callId, seat === "anya" ? "Anya" : "Hank", data.text);
+          }
         }
         if (type === "realtime.call.ended" || type === "session.ended") {
           logCallEvent(callId, { type: "call_end", seat, event_type: type });
@@ -66685,6 +66823,7 @@ function openSideband(callId, seat, apiKey, config) {
       if (opened) {
         console.log(`[voice] sideband closed for call ${callId} (${seat})`);
         logCallEvent(callId, { type: "call_end", seat, reason: "sideband_closed" });
+        sendCallSummary(callId, seat, callStartedAt);
       } else {
         scheduleRetry();
       }

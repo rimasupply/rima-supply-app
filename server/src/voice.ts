@@ -28,6 +28,10 @@
  *   delivery is ALSO written to a durable outbox file under DATA_DIR, so
  *   nothing is lost when email env is absent; in that case the gap is
  *   logged, never papered over, and no credential is ever invented.
+ * - Call summaries: when a call ends, a summary + transcript is emailed
+ *   to Randy and Nate through the same path (LLM summary with a
+ *   rule-based fallback, so a summary always lands — a call with no
+ *   capture still produces a follow-up flag, never silence).
  *
  * Env (names only — values live in the deploy env, never in files):
  *   OPENAI_WEBHOOK_SECRET — webhook signing secret (required, fail closed)
@@ -329,6 +333,128 @@ export function logCallEvent(callId: string, event: Record<string, unknown>): vo
 }
 
 /* ------------------------------------------------------------------ */
+/* Per-call records for the post-call summary                         */
+/* ------------------------------------------------------------------ */
+
+type CallTurn = { speaker: string; text: string };
+type CallTool = { name: string; detail: string };
+type CallRecord = { startedAt: number; turns: CallTurn[]; tools: CallTool[]; callerName: string };
+
+const callRecords = new Map<string, CallRecord>();
+
+function callRecord(callId: string): CallRecord {
+  let rec = callRecords.get(callId);
+  if (!rec) {
+    if (callRecords.size > 100) {
+      const oldest = callRecords.keys().next().value;
+      if (oldest) callRecords.delete(oldest);
+    }
+    rec = { startedAt: Date.now(), turns: [], tools: [], callerName: "" };
+    callRecords.set(callId, rec);
+  }
+  return rec;
+}
+
+function recordCallTurn(callId: string, speaker: string, text: string): void {
+  const clean = text.trim();
+  if (!clean) return;
+  const rec = callRecord(callId);
+  const last = rec.turns[rec.turns.length - 1];
+  if (last && last.speaker === speaker && last.text === clean) return; // terminal + item dupes
+  if (rec.turns.length < 300) rec.turns.push({ speaker, text: clean });
+}
+
+function recordCallTool(callId: string, name: string, detail: string): void {
+  callRecord(callId).tools.push({ name, detail });
+}
+
+function recordCallCaller(callId: string, name: string): void {
+  const rec = callRecord(callId);
+  if (!rec.callerName) rec.callerName = name;
+}
+
+/** Post-call summary + transcript, emailed to the team. Never silent:
+ *  an LLM summary is attempted first; any failure falls back to a
+ *  rule-based summary built from the turns and tools. Runs after the
+ *  sideband closes, so it cannot affect the call itself. */
+async function sendCallSummary(callId: string, seat: Seat, startedAt: number): Promise<void> {
+  try {
+    const rec = callRecords.get(callId);
+    callRecords.delete(callId);
+    const turns = rec?.turns ?? [];
+    const tools = rec?.tools ?? [];
+    const callerName = rec?.callerName ?? "";
+    const seatName = seat === "anya" ? "Anya" : "Hank";
+    const secs = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
+    const duration = secs < 90 ? `${secs}s` : `${Math.round(secs / 60)} min`;
+    let transcriptText = turns.map((t) => `${t.speaker}: ${t.text}`).join("\n");
+    if (transcriptText.length > 12000) transcriptText = `${transcriptText.slice(0, 12000)}\n[transcript truncated]`;
+    const toolsLine = tools.length > 0
+      ? tools.map((t) => (t.detail ? `${t.name} (${t.detail})` : t.name)).join(", ")
+      : "none";
+
+    let summaryText = "";
+    const apiKey = process.env.OPENAI_API_KEY ?? "";
+    if (apiKey && transcriptText) {
+      try {
+        const resp = await fetch("https://api.openai.com/v1/chat/completions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+          body: JSON.stringify({
+            model: "gpt-4o-mini",
+            messages: [
+              { role: "system", content: "Summarize this store phone call for the team in 4-6 short lines: who called (only if stated), what they wanted, items or order details, questions asked, what the assistant promised or captured, and anything needing a human follow-up. Do not invent details not in the transcript. If no order was placed, say so plainly." },
+              { role: "user", content: `Transcript:\n${transcriptText}\n\nTools used on this call: ${toolsLine}` },
+            ],
+            max_tokens: 600,
+            temperature: 0.2,
+          }),
+          signal: AbortSignal.timeout(15000),
+        });
+        if (resp.ok) {
+          const data = (await resp.json()) as { choices?: { message?: { content?: string } }[] };
+          summaryText = (data.choices?.[0]?.message?.content ?? "").trim();
+        }
+      } catch (err) {
+        console.log(`[voice] call summary LLM failed, using rule-based summary: ${err instanceof Error ? err.message : "unknown"}`);
+      }
+    }
+    if (!summaryText) {
+      const lines = [
+        `Duration: ${duration}`,
+        `Spoken turns: ${turns.length}`,
+        `Tools used: ${toolsLine}`,
+      ];
+      const deliveryTools = ["capture_draft_order", "take_message", "capture_product_note", "capture_document_request", "escalate_to_team"];
+      if (!tools.some((t) => deliveryTools.includes(t.name))) {
+        lines.push("No order or message was captured on this call — follow up with the caller if they needed something.");
+      }
+      const draftTool = tools.find((t) => t.name === "capture_draft_order");
+      if (draftTool && draftTool.detail === "draft not_created") {
+        lines.push("A draft capture ran but the Shopify draft was NOT created — see the draft email for the reason.");
+      }
+      summaryText = lines.join("\n");
+    }
+
+    const body = [
+      `CALL SUMMARY - ${seatName}`,
+      `Caller: ${callerName || "unknown"}`,
+      `Duration: ${duration}`,
+      "",
+      "Summary:",
+      summaryText,
+      "",
+      "--- Transcript ---",
+      transcriptText || "(no spoken turns captured)",
+    ].join("\n");
+    await deliverTeamThread({ to: [], subject: `CALL SUMMARY - ${seatName} - ${callerName || "unknown caller"}`, body });
+    console.log(`[voice] call summary sent for call ${callId}`);
+  } catch (err) {
+    console.error(`[voice] call summary failed for call ${callId}:`, err instanceof Error ? err.message : "unknown");
+  }
+}
+
+/* ------------------------------------------------------------------ */
 /* Team delivery: durable outbox + Zoho SMTP from Anya's own mailbox   */
 /* (no Gmail anywhere in the path; direct to Randy and Nate)           */
 /* ------------------------------------------------------------------ */
@@ -465,6 +591,26 @@ export async function lookupSheets(query: string): Promise<SheetLookupResult> {
 /* ------------------------------------------------------------------ */
 
 async function dispatchTool(seat: Seat, callId: string, name: string, args: Record<string, unknown>): Promise<string> {
+  const output = await dispatchToolInner(seat, callId, name, args);
+  // Record the outcome for the post-call summary (no caller details in
+  // any log line; the summary email goes to the same team audience as
+  // the draft emails).
+  try {
+    const parsed = JSON.parse(output) as Record<string, unknown>;
+    let detail = "";
+    if (name === "capture_draft_order" && typeof parsed.shopify_draft === "string") {
+      detail = `draft ${parsed.shopify_draft}`;
+    }
+    recordCallTool(callId, name, detail);
+  } catch {
+    recordCallTool(callId, name, "");
+  }
+  const caller = args.caller_name;
+  if (typeof caller === "string" && caller.trim()) recordCallCaller(callId, caller.trim());
+  return output;
+}
+
+async function dispatchToolInner(seat: Seat, callId: string, name: string, args: Record<string, unknown>): Promise<string> {
   const s = (v: unknown) => String(v ?? "");
   logCallEvent(callId, { type: "tool_call", seat, tool: name, args });
   // Console trace (tool name + call id only, never caller details): the
@@ -614,6 +760,7 @@ function openSideband(callId: string, seat: Seat, apiKey: string, config: { inst
   const delaysMs = [0, 1000, 2000, 4000, 8000];
   let attempt = 0;
   let opened = false;
+  const callStartedAt = Date.now();
   let retryPending = false;
   const scheduleRetry = (): void => {
     if (opened || retryPending) return;
@@ -686,6 +833,15 @@ function openSideband(callId: string, seat: Seat, apiKey: string, config: { inst
         // Transcript capture: keep the text-bearing events, drop the rest.
         if (type.includes("transcript") || type === "response.output_text.done" || type === "conversation.item.created") {
           logCallEvent(callId, { type: "session_event", seat, event_type: type, item: data.item ?? null, text: data.text ?? data.transcript ?? null });
+          // Spoken turns for the post-call summary (terminal events only,
+          // so one utterance is recorded once).
+          if (type === "conversation.item.input_audio_transcription.completed" && typeof data.transcript === "string" && data.transcript) {
+            recordCallTurn(callId, "Caller", data.transcript);
+          } else if (type === "response.audio_transcript.done" && typeof data.transcript === "string" && data.transcript) {
+            recordCallTurn(callId, seat === "anya" ? "Anya" : "Hank", data.transcript);
+          } else if (type === "response.output_text.done" && typeof data.text === "string" && data.text) {
+            recordCallTurn(callId, seat === "anya" ? "Anya" : "Hank", data.text);
+          }
         }
         if (type === "realtime.call.ended" || type === "session.ended") {
           logCallEvent(callId, { type: "call_end", seat, event_type: type });
@@ -697,6 +853,7 @@ function openSideband(callId: string, seat: Seat, apiKey: string, config: { inst
       if (opened) {
         console.log(`[voice] sideband closed for call ${callId} (${seat})`);
         logCallEvent(callId, { type: "call_end", seat, reason: "sideband_closed" });
+        void sendCallSummary(callId, seat, callStartedAt);
       } else {
         scheduleRetry();
       }
