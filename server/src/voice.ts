@@ -148,7 +148,8 @@ const ANYA_INSTRUCTIONS = [
   "Greet every caller with exactly: \"Rima Supply, this is Anya, RIMA's digital assistant, how can I help you?\"",
   "You identify as RIMA's digital assistant once, in the greeting. Never claim to be human. If asked directly whether you are human, answer honestly: you are Anya, RIMA's digital assistant, and you can get a human.",
   "NEVER quote a price, a stock level, a discount, or a delivery time. Prices come from Randy or Nate, never from you and never from the catalog. Draft orders have NO price — the draft-order tool has no price field, and you must never speak one.",
-  "Orders: ask \"Did you want to place an order?\" Take their information and form a DRAFT order with the capture_draft_order tool (a draft is not a confirmed order; a human confirms). Close every order with exactly: \"I'll have Randy or Nate reach out to you ASAP for a price, thank you so so much for your order, talk to you soon!\" Say nothing else about price, stock, or timing.",
+  "Orders — follow this exact sequence, no shortcuts. (1) Ask \"Did you want to place an order?\" (2) Ask for each missing piece ONCE: their name, what they want and how many, pickup or delivery. Never ask for something they already told you. If they do not give a callback number, use the callback number in your instructions (the number they are calling from) — do not ask for it. (3) The moment you have a name, items, and a callback number, call capture_draft_order IMMEDIATELY. Do not keep chatting about the order, do not re-ask, do not summarize the order in speech first. (4) Only AFTER the tool returns, close with exactly: \"I'll have Randy or Nate reach out to you ASAP for a price, thank you so so much for your order, talk to you soon!\" Say nothing else about price, stock, or timing. The order is NOT complete until the tool returns — never speak the closing line, never say goodbye, and never say you will have them reach out before the tool result arrives.",
+  "Never loop: never ask the same question twice, never re-ask for information the caller already gave, and never go more than two clarification rounds on one item. After two rounds, capture what you have (with a note about what is unclear) and move on. If you catch yourself repeating a question, stop, use what you already have, and call the tool.",
   "Paint orders are Nate's department. Offer: leave him a message or want me to try and connect you? If they say yes, use the request_forward tool with target nate.",
   "Technical or safety questions (TDS, SDS, mixing, how-to) are Hank's department. Say exactly: \"Let me get Hank for you! He's our in-house expert, he has the whole file of SDS and TDS sheets and can get you the answer you need!\" Then use the request_forward tool with target hank. Never answer technical questions yourself.",
   "When a caller asks for a product, use the search_catalog tool to identify it by name and description. Prices are NEVER spoken from the catalog.",
@@ -186,7 +187,7 @@ const ANYA_TOOLS: ToolDef[] = [
   {
     type: "function",
     name: "capture_draft_order",
-    description: "Capture a DRAFT order. A draft is not a confirmed order; a human confirms and sets the price. There is deliberately no price field on this tool.",
+    description: "Capture a DRAFT order. Call this the moment you have a name, items, and a callback number — before any closing line. Do not speak the closing line until this returns. A draft is not a confirmed order; a human confirms and sets the price. There is deliberately no price field on this tool.",
     parameters: {
       type: "object",
       properties: {
@@ -338,7 +339,7 @@ export function logCallEvent(callId: string, event: Record<string, unknown>): vo
 
 type CallTurn = { speaker: string; text: string };
 type CallTool = { name: string; detail: string };
-type CallRecord = { startedAt: number; turns: CallTurn[]; tools: CallTool[]; callerName: string };
+type CallRecord = { startedAt: number; turns: CallTurn[]; tools: CallTool[]; callerName: string; callerPhone: string };
 
 const callRecords = new Map<string, CallRecord>();
 
@@ -349,7 +350,7 @@ function callRecord(callId: string): CallRecord {
       const oldest = callRecords.keys().next().value;
       if (oldest) callRecords.delete(oldest);
     }
-    rec = { startedAt: Date.now(), turns: [], tools: [], callerName: "" };
+    rec = { startedAt: Date.now(), turns: [], tools: [], callerName: "", callerPhone: "" };
     callRecords.set(callId, rec);
   }
   return rec;
@@ -373,6 +374,11 @@ function recordCallCaller(callId: string, name: string): void {
   if (!rec.callerName) rec.callerName = name;
 }
 
+function recordCallPhone(callId: string, phone: string): void {
+  const rec = callRecord(callId);
+  if (!rec.callerPhone) rec.callerPhone = phone;
+}
+
 /** Post-call summary + transcript, emailed to the team. Never silent:
  *  an LLM summary is attempted first; any failure falls back to a
  *  rule-based summary built from the turns and tools. Runs after the
@@ -384,6 +390,7 @@ async function sendCallSummary(callId: string, seat: Seat, startedAt: number): P
     const turns = rec?.turns ?? [];
     const tools = rec?.tools ?? [];
     const callerName = rec?.callerName ?? "";
+    const callerLabel = callerName || rec?.callerPhone || "";
     const seatName = seat === "anya" ? "Anya" : "Hank";
     const secs = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
     const duration = secs < 90 ? `${secs}s` : `${Math.round(secs / 60)} min`;
@@ -438,7 +445,7 @@ async function sendCallSummary(callId: string, seat: Seat, startedAt: number): P
 
     const body = [
       `CALL SUMMARY - ${seatName}`,
-      `Caller: ${callerName || "unknown"}`,
+      `Caller: ${callerLabel || "unknown"}`,
       `Duration: ${duration}`,
       "",
       "Summary:",
@@ -447,8 +454,13 @@ async function sendCallSummary(callId: string, seat: Seat, startedAt: number): P
       "--- Transcript ---",
       transcriptText || "(no spoken turns captured)",
     ].join("\n");
-    await deliverTeamThread({ to: [], subject: `CALL SUMMARY - ${seatName} - ${callerName || "unknown caller"}`, body });
-    console.log(`[voice] call summary sent for call ${callId}`);
+    const result = await deliverTeamThread({ to: [], subject: `CALL SUMMARY - ${seatName} - ${callerLabel || "unknown caller"}`, body });
+    // Log what actually happened: deliverTeamThread never throws (the
+    // outbox is the record), so "sent" must reflect the emailed flag —
+    // the old unconditional line hid the Oct 29 SMTP timeout.
+    console.log(result.emailed
+      ? `[voice] call summary sent for call ${callId}`
+      : `[voice] call summary queued only (email failed; in outbox) for call ${callId}`);
   } catch (err) {
     console.error(`[voice] call summary failed for call ${callId}:`, err instanceof Error ? err.message : "unknown");
   }
@@ -492,20 +504,43 @@ export async function deliverTeamThread(delivery: TeamThreadDelivery): Promise<{
     return { queued, emailed: false };
   }
   const to = delivery.to.length > 0 ? delivery.to : [RANDY_EMAIL, NATE_EMAIL];
-  try {
-    const transport = nodemailer.createTransport({
-      host,
-      port,
-      secure: port === 465,
-      auth: { user, pass },
-    });
-    await transport.sendMail({ from, to: to.join(", "), subject: delivery.subject, text: delivery.body });
-    console.log(`[voice] team email sent: ${delivery.subject}`);
-    return { queued, emailed: true };
-  } catch (err) {
-    console.error(`[voice] SMTP send failed; message remains in the outbox:`, err);
-    return { queued, emailed: false };
+  // Dual-port with short timeouts. The Oct 29 failure was a 2-minute
+  // CONNECT_TIMEOUT on 465 (the nodemailer default): the connection hung
+  // instead of failing fast, stalling the in-call tool result behind it.
+  // Primary = configured port; fallback = the other standard Zoho port.
+  // Fallback runs ONLY on connection-level failures — an auth failure is
+  // not retried on another port.
+  const primaryPort = port;
+  const fallbackPorts = [465, 587].filter((p) => p !== primaryPort);
+  const attempts = [primaryPort, ...fallbackPorts];
+  let lastErr: unknown = null;
+  for (const attemptPort of attempts) {
+    try {
+      const transport = nodemailer.createTransport({
+        host,
+        port: attemptPort,
+        secure: attemptPort === 465,
+        requireTLS: attemptPort === 587,
+        connectionTimeout: 15000,
+        greetingTimeout: 15000,
+        socketTimeout: 30000,
+        auth: { user, pass },
+      });
+      await transport.sendMail({ from, to: to.join(", "), subject: delivery.subject, text: delivery.body });
+      console.log(`[voice] team email sent (port ${attemptPort}): ${delivery.subject}`);
+      return { queued, emailed: true };
+    } catch (err) {
+      lastErr = err;
+      const code = (err as { code?: string }).code ?? "";
+      const msg = err instanceof Error ? err.message : String(err);
+      console.log(`[voice] SMTP attempt port ${attemptPort} failed (${code || msg})`);
+      const connectionLevel = ["ETIMEDOUT", "ECONNREFUSED", "ENOTFOUND", "ECONNRESET", "EPIPE"].includes(code)
+        || /timeout|connect/i.test(msg);
+      if (!connectionLevel) break; // auth/config failure — another port will not fix it
+    }
   }
+  console.error(`[voice] SMTP send failed; message remains in the outbox:`, lastErr);
+  return { queued, emailed: false };
 }
 
 /* ------------------------------------------------------------------ */
@@ -668,12 +703,17 @@ async function dispatchToolInner(seat: Seat, callId: string, name: string, args:
         emailBody += draft.ok
           ? `\nShopify draft: ${draft.name} — ${draft.adminUrl}`
           : `\nShopify draft: NOT created (${draft.reason})`;
-        await deliverTeamThread({ to: [], subject: `DRAFT ORDER - ${s(args.caller_name)}`, body: emailBody });
+        // Fire-and-forget: the outbox write inside deliverTeamThread is
+        // synchronous, so the order is recorded even without awaiting;
+        // awaiting the SMTP send stalled the tool result (and the call)
+        // behind a 2-minute timeout on Oct 29.
+        void deliverTeamThread({ to: [], subject: `DRAFT ORDER - ${s(args.caller_name)}`, body: emailBody });
         return JSON.stringify({ captured: true, price: "NONE", shopify_draft: draft.ok ? "created" : "not_created" });
       } catch (err) {
         console.error("[voice] Shopify draft failed:", err instanceof Error ? err.message : "unknown");
         emailBody += "\nShopify draft: NOT created (error — see server log)";
-        await deliverTeamThread({ to: [], subject: `DRAFT ORDER - ${s(args.caller_name)}`, body: emailBody });
+        // Same fire-and-forget as above.
+        void deliverTeamThread({ to: [], subject: `DRAFT ORDER - ${s(args.caller_name)}`, body: emailBody });
         return JSON.stringify({ captured: true, price: "NONE", shopify_draft: "not_created" });
       }
     }
@@ -689,7 +729,7 @@ async function dispatchToolInner(seat: Seat, callId: string, name: string, args:
         `What they need (their words): ${s(args.message ?? args.question)}`,
         `Taken by: ${seat === "anya" ? "Anya" : "Hank"} (digital assistant)`,
       ].join("\n");
-      await deliverTeamThread({ to, subject: `MESSAGE FOR ${seat === "anya" ? forPerson.toUpperCase() : "RANDY AND NATE"} - ${s(args.caller_name)}`, body });
+      void deliverTeamThread({ to, subject: `MESSAGE FOR ${seat === "anya" ? forPerson.toUpperCase() : "RANDY AND NATE"} - ${s(args.caller_name)}`, body });
       return JSON.stringify({ captured: true });
     }
     case "capture_product_note": {
@@ -700,7 +740,7 @@ async function dispatchToolInner(seat: Seat, callId: string, name: string, args:
         `Callback phone: ${s(args.callback_phone)}`,
         "Taken by: Anya (digital assistant)",
       ].join("\n");
-      await deliverTeamThread({ to: [], subject: `PRODUCT NOTE - ${s(args.caller_name)}`, body });
+      void deliverTeamThread({ to: [], subject: `PRODUCT NOTE - ${s(args.caller_name)}`, body });
       return JSON.stringify({ captured: true });
     }
     case "capture_document_request": {
@@ -711,7 +751,7 @@ async function dispatchToolInner(seat: Seat, callId: string, name: string, args:
         `Sheet type asked for: ${s(args.sheet_type)} (MSDS maps to the SDS on file)`,
         "Note: the caller was NOT told the email already went out; the team sends the sheet from the library.",
       ].join("\n");
-      await deliverTeamThread({ to: [], subject: `DOCUMENT REQUEST - ${s(args.product)}`, body });
+      void deliverTeamThread({ to: [], subject: `DOCUMENT REQUEST - ${s(args.product)}`, body });
       return JSON.stringify({ captured: true, note: "Team sends the sheet; do not tell the caller it already went out." });
     }
     case "escalate_to_team": {
@@ -725,7 +765,7 @@ async function dispatchToolInner(seat: Seat, callId: string, name: string, args:
         `Urgency the caller stated: ${s(args.urgency)}`,
         "Sent to: Randy AND Nate",
       ].join("\n");
-      await deliverTeamThread({ to: [], subject: `HANK ESCALATION - ${s(args.caller_name)}`, body });
+      void deliverTeamThread({ to: [], subject: `HANK ESCALATION - ${s(args.caller_name)}`, body });
       return JSON.stringify({ captured: true });
     }
     case "request_forward": {
@@ -906,6 +946,32 @@ function extractToNumber(data: Record<string, unknown>): string | null {
   return null;
 }
 
+/** Best-effort caller number from the event (never a seat number). Used
+ *  as the summary's caller label when no tool supplies a name, and as
+ *  the callback number in the session instructions so Anya does not have
+ *  to ask for it. Absent on trunked calls — then nothing changes. */
+function extractFromNumber(data: Record<string, unknown>): string | null {
+  const strings: string[] = [];
+  const pushStr = (v: unknown): void => { if (typeof v === "string" && v) strings.push(v); };
+  const pushObjStrings = (o: unknown): void => {
+    if (o && typeof o === "object" && !Array.isArray(o)) {
+      for (const v of Object.values(o as Record<string, unknown>)) pushStr(v);
+    }
+  };
+  for (const k of ["from", "from_number", "caller", "caller_number", "caller_id", "calling_number"]) pushStr(data[k]);
+  pushObjStrings(data.sip);
+  pushObjStrings(data.sip_headers);
+  pushObjStrings(data.call);
+  for (const s of strings) {
+    const d = s.replace(/\D/g, "");
+    const digits = d.length === 11 && d.startsWith("1") ? d.slice(1) : d;
+    if (digits.length !== 10) continue;
+    if (SEAT_SUFFIXES.some((suf) => digits.endsWith(suf))) continue;
+    return `+1${digits}`;
+  }
+  return null;
+}
+
 export async function voiceWebhookHandler(req: Request, res: Response): Promise<void> {
   // Fail closed: no signing secret configured => refuse everything.
   const secret = process.env.OPENAI_WEBHOOK_SECRET ?? "";
@@ -979,6 +1045,17 @@ export async function voiceWebhookHandler(req: Request, res: Response): Promise<
     return;
   }
   const config = buildSessionConfig(seat);
+  // Best-effort caller number (never a seat number): the summary's
+  // caller label when no tool supplies a name, and the callback number
+  // in the session instructions so Anya need not ask for it (one less
+  // ask-loop). Absent on trunked calls — then nothing changes. The
+  // number itself is never logged, only whether one was found.
+  const callerPhone = extractFromNumber(data);
+  if (callerPhone) {
+    recordCallPhone(callId, callerPhone);
+    config.instructions += `\nThe caller's callback number is ${callerPhone} (the number they are calling from). Use it for the callback_phone field unless they give a different number. Never read it out loud.`;
+    console.log(`[voice] caller number captured from event for call ${callId}`);
+  }
   try {
     // Accept stays minimal and guide-shaped: the GA Realtime API removed
     // the OpenAI-Beta: realtime=v1 header (May 2026), and overloaded

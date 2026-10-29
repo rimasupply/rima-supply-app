@@ -66199,7 +66199,8 @@ var ANYA_INSTRUCTIONS = [
   `Greet every caller with exactly: "Rima Supply, this is Anya, RIMA's digital assistant, how can I help you?"`,
   "You identify as RIMA's digital assistant once, in the greeting. Never claim to be human. If asked directly whether you are human, answer honestly: you are Anya, RIMA's digital assistant, and you can get a human.",
   "NEVER quote a price, a stock level, a discount, or a delivery time. Prices come from Randy or Nate, never from you and never from the catalog. Draft orders have NO price \u2014 the draft-order tool has no price field, and you must never speak one.",
-  `Orders: ask "Did you want to place an order?" Take their information and form a DRAFT order with the capture_draft_order tool (a draft is not a confirmed order; a human confirms). Close every order with exactly: "I'll have Randy or Nate reach out to you ASAP for a price, thank you so so much for your order, talk to you soon!" Say nothing else about price, stock, or timing.`,
+  `Orders \u2014 follow this exact sequence, no shortcuts. (1) Ask "Did you want to place an order?" (2) Ask for each missing piece ONCE: their name, what they want and how many, pickup or delivery. Never ask for something they already told you. If they do not give a callback number, use the callback number in your instructions (the number they are calling from) \u2014 do not ask for it. (3) The moment you have a name, items, and a callback number, call capture_draft_order IMMEDIATELY. Do not keep chatting about the order, do not re-ask, do not summarize the order in speech first. (4) Only AFTER the tool returns, close with exactly: "I'll have Randy or Nate reach out to you ASAP for a price, thank you so so much for your order, talk to you soon!" Say nothing else about price, stock, or timing. The order is NOT complete until the tool returns \u2014 never speak the closing line, never say goodbye, and never say you will have them reach out before the tool result arrives.`,
+  "Never loop: never ask the same question twice, never re-ask for information the caller already gave, and never go more than two clarification rounds on one item. After two rounds, capture what you have (with a note about what is unclear) and move on. If you catch yourself repeating a question, stop, use what you already have, and call the tool.",
   "Paint orders are Nate's department. Offer: leave him a message or want me to try and connect you? If they say yes, use the request_forward tool with target nate.",
   `Technical or safety questions (TDS, SDS, mixing, how-to) are Hank's department. Say exactly: "Let me get Hank for you! He's our in-house expert, he has the whole file of SDS and TDS sheets and can get you the answer you need!" Then use the request_forward tool with target hank. Never answer technical questions yourself.`,
   "When a caller asks for a product, use the search_catalog tool to identify it by name and description. Prices are NEVER spoken from the catalog.",
@@ -66237,7 +66238,7 @@ var ANYA_TOOLS = [
   {
     type: "function",
     name: "capture_draft_order",
-    description: "Capture a DRAFT order. A draft is not a confirmed order; a human confirms and sets the price. There is deliberately no price field on this tool.",
+    description: "Capture a DRAFT order. Call this the moment you have a name, items, and a callback number \u2014 before any closing line. Do not speak the closing line until this returns. A draft is not a confirmed order; a human confirms and sets the price. There is deliberately no price field on this tool.",
     parameters: {
       type: "object",
       properties: {
@@ -66384,7 +66385,7 @@ function callRecord(callId) {
       if (oldest)
         callRecords.delete(oldest);
     }
-    rec = { startedAt: Date.now(), turns: [], tools: [], callerName: "" };
+    rec = { startedAt: Date.now(), turns: [], tools: [], callerName: "", callerPhone: "" };
     callRecords.set(callId, rec);
   }
   return rec;
@@ -66408,6 +66409,11 @@ function recordCallCaller(callId, name) {
   if (!rec.callerName)
     rec.callerName = name;
 }
+function recordCallPhone(callId, phone) {
+  const rec = callRecord(callId);
+  if (!rec.callerPhone)
+    rec.callerPhone = phone;
+}
 async function sendCallSummary(callId, seat, startedAt) {
   try {
     const rec = callRecords.get(callId);
@@ -66415,6 +66421,7 @@ async function sendCallSummary(callId, seat, startedAt) {
     const turns = rec?.turns ?? [];
     const tools = rec?.tools ?? [];
     const callerName = rec?.callerName ?? "";
+    const callerLabel = callerName || rec?.callerPhone || "";
     const seatName = seat === "anya" ? "Anya" : "Hank";
     const secs = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
     const duration = secs < 90 ? `${secs}s` : `${Math.round(secs / 60)} min`;
@@ -66472,7 +66479,7 @@ Tools used on this call: ${toolsLine}` }
     }
     const body = [
       `CALL SUMMARY - ${seatName}`,
-      `Caller: ${callerName || "unknown"}`,
+      `Caller: ${callerLabel || "unknown"}`,
       `Duration: ${duration}`,
       "",
       "Summary:",
@@ -66482,8 +66489,8 @@ Tools used on this call: ${toolsLine}` }
       transcriptText || "(no spoken turns captured)"
     ].join(`
 `);
-    await deliverTeamThread({ to: [], subject: `CALL SUMMARY - ${seatName} - ${callerName || "unknown caller"}`, body });
-    console.log(`[voice] call summary sent for call ${callId}`);
+    const result = await deliverTeamThread({ to: [], subject: `CALL SUMMARY - ${seatName} - ${callerLabel || "unknown caller"}`, body });
+    console.log(result.emailed ? `[voice] call summary sent for call ${callId}` : `[voice] call summary queued only (email failed; in outbox) for call ${callId}`);
   } catch (err) {
     console.error(`[voice] call summary failed for call ${callId}:`, err instanceof Error ? err.message : "unknown");
   }
@@ -66512,20 +66519,37 @@ async function deliverTeamThread(delivery) {
     return { queued, emailed: false };
   }
   const to = delivery.to.length > 0 ? delivery.to : [RANDY_EMAIL, NATE_EMAIL];
-  try {
-    const transport = nodemailer_default.createTransport({
-      host,
-      port,
-      secure: port === 465,
-      auth: { user, pass }
-    });
-    await transport.sendMail({ from, to: to.join(", "), subject: delivery.subject, text: delivery.body });
-    console.log(`[voice] team email sent: ${delivery.subject}`);
-    return { queued, emailed: true };
-  } catch (err) {
-    console.error(`[voice] SMTP send failed; message remains in the outbox:`, err);
-    return { queued, emailed: false };
+  const primaryPort = port;
+  const fallbackPorts = [465, 587].filter((p) => p !== primaryPort);
+  const attempts = [primaryPort, ...fallbackPorts];
+  let lastErr = null;
+  for (const attemptPort of attempts) {
+    try {
+      const transport = nodemailer_default.createTransport({
+        host,
+        port: attemptPort,
+        secure: attemptPort === 465,
+        requireTLS: attemptPort === 587,
+        connectionTimeout: 15000,
+        greetingTimeout: 15000,
+        socketTimeout: 30000,
+        auth: { user, pass }
+      });
+      await transport.sendMail({ from, to: to.join(", "), subject: delivery.subject, text: delivery.body });
+      console.log(`[voice] team email sent (port ${attemptPort}): ${delivery.subject}`);
+      return { queued, emailed: true };
+    } catch (err) {
+      lastErr = err;
+      const code = err.code ?? "";
+      const msg = err instanceof Error ? err.message : String(err);
+      console.log(`[voice] SMTP attempt port ${attemptPort} failed (${code || msg})`);
+      const connectionLevel = ["ETIMEDOUT", "ECONNREFUSED", "ENOTFOUND", "ECONNRESET", "EPIPE"].includes(code) || /timeout|connect/i.test(msg);
+      if (!connectionLevel)
+        break;
+    }
   }
+  console.error(`[voice] SMTP send failed; message remains in the outbox:`, lastErr);
+  return { queued, emailed: false };
 }
 var CATALOG = products_default;
 function searchCatalog(q) {
@@ -66650,13 +66674,13 @@ async function dispatchToolInner(seat, callId, name, args) {
         emailBody += draft.ok ? `
 Shopify draft: ${draft.name} \u2014 ${draft.adminUrl}` : `
 Shopify draft: NOT created (${draft.reason})`;
-        await deliverTeamThread({ to: [], subject: `DRAFT ORDER - ${s(args.caller_name)}`, body: emailBody });
+        deliverTeamThread({ to: [], subject: `DRAFT ORDER - ${s(args.caller_name)}`, body: emailBody });
         return JSON.stringify({ captured: true, price: "NONE", shopify_draft: draft.ok ? "created" : "not_created" });
       } catch (err) {
         console.error("[voice] Shopify draft failed:", err instanceof Error ? err.message : "unknown");
         emailBody += `
 Shopify draft: NOT created (error \u2014 see server log)`;
-        await deliverTeamThread({ to: [], subject: `DRAFT ORDER - ${s(args.caller_name)}`, body: emailBody });
+        deliverTeamThread({ to: [], subject: `DRAFT ORDER - ${s(args.caller_name)}`, body: emailBody });
         return JSON.stringify({ captured: true, price: "NONE", shopify_draft: "not_created" });
       }
     }
@@ -66671,7 +66695,7 @@ Shopify draft: NOT created (error \u2014 see server log)`;
         `Taken by: ${seat === "anya" ? "Anya" : "Hank"} (digital assistant)`
       ].join(`
 `);
-      await deliverTeamThread({ to, subject: `MESSAGE FOR ${seat === "anya" ? forPerson.toUpperCase() : "RANDY AND NATE"} - ${s(args.caller_name)}`, body });
+      deliverTeamThread({ to, subject: `MESSAGE FOR ${seat === "anya" ? forPerson.toUpperCase() : "RANDY AND NATE"} - ${s(args.caller_name)}`, body });
       return JSON.stringify({ captured: true });
     }
     case "capture_product_note": {
@@ -66683,7 +66707,7 @@ Shopify draft: NOT created (error \u2014 see server log)`;
         "Taken by: Anya (digital assistant)"
       ].join(`
 `);
-      await deliverTeamThread({ to: [], subject: `PRODUCT NOTE - ${s(args.caller_name)}`, body });
+      deliverTeamThread({ to: [], subject: `PRODUCT NOTE - ${s(args.caller_name)}`, body });
       return JSON.stringify({ captured: true });
     }
     case "capture_document_request": {
@@ -66695,7 +66719,7 @@ Shopify draft: NOT created (error \u2014 see server log)`;
         "Note: the caller was NOT told the email already went out; the team sends the sheet from the library."
       ].join(`
 `);
-      await deliverTeamThread({ to: [], subject: `DOCUMENT REQUEST - ${s(args.product)}`, body });
+      deliverTeamThread({ to: [], subject: `DOCUMENT REQUEST - ${s(args.product)}`, body });
       return JSON.stringify({ captured: true, note: "Team sends the sheet; do not tell the caller it already went out." });
     }
     case "escalate_to_team": {
@@ -66710,7 +66734,7 @@ Shopify draft: NOT created (error \u2014 see server log)`;
         "Sent to: Randy AND Nate"
       ].join(`
 `);
-      await deliverTeamThread({ to: [], subject: `HANK ESCALATION - ${s(args.caller_name)}`, body });
+      deliverTeamThread({ to: [], subject: `HANK ESCALATION - ${s(args.caller_name)}`, body });
       return JSON.stringify({ captured: true });
     }
     case "request_forward": {
@@ -66868,6 +66892,34 @@ function extractToNumber(data) {
   }
   return null;
 }
+function extractFromNumber(data) {
+  const strings = [];
+  const pushStr = (v) => {
+    if (typeof v === "string" && v)
+      strings.push(v);
+  };
+  const pushObjStrings = (o) => {
+    if (o && typeof o === "object" && !Array.isArray(o)) {
+      for (const v of Object.values(o))
+        pushStr(v);
+    }
+  };
+  for (const k of ["from", "from_number", "caller", "caller_number", "caller_id", "calling_number"])
+    pushStr(data[k]);
+  pushObjStrings(data.sip);
+  pushObjStrings(data.sip_headers);
+  pushObjStrings(data.call);
+  for (const s of strings) {
+    const d = s.replace(/\D/g, "");
+    const digits = d.length === 11 && d.startsWith("1") ? d.slice(1) : d;
+    if (digits.length !== 10)
+      continue;
+    if (SEAT_SUFFIXES.some((suf) => digits.endsWith(suf)))
+      continue;
+    return `+1${digits}`;
+  }
+  return null;
+}
 async function voiceWebhookHandler(req, res) {
   const secret = process.env.OPENAI_WEBHOOK_SECRET ?? "";
   if (!secret) {
@@ -66933,6 +66985,13 @@ async function voiceWebhookHandler(req, res) {
     return;
   }
   const config = buildSessionConfig(seat);
+  const callerPhone = extractFromNumber(data);
+  if (callerPhone) {
+    recordCallPhone(callId, callerPhone);
+    config.instructions += `
+The caller's callback number is ${callerPhone} (the number they are calling from). Use it for the callback_phone field unless they give a different number. Never read it out loud.`;
+    console.log(`[voice] caller number captured from event for call ${callId}`);
+  }
   try {
     const acceptRes = await fetch(`https://api.openai.com/v1/realtime/calls/${encodeURIComponent(callId)}/accept`, {
       method: "POST",
